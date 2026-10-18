@@ -23,6 +23,9 @@ from .tools.base import ToolProtocolError
 from .tools.builtin import crashing_tool, flaky_write_tool, note_read
 from .tools.registry import build_fixture_registry
 from .tools.runner import ToolRunner
+from .concurrency import BoundedRunner
+from .eval import run_suite
+from .eval.suite import summarize
 from .runtime.demo import EffectSink, build_demo_task
 from .runtime.types import CancelToken
 from .verify import runner, specs
@@ -68,15 +71,21 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     previous = signal.signal(signal.SIGINT, _on_sigint)
     try:
-        runtime = AgentRuntime(
-            build_demo_task(state_dir, effect_key=args.effect_key),
-            state_dir,
-            run_id=args.run_id,
-            durability=Durability(args.durability),
-            cancel=cancel,
-            tool_delay=args.tool_delay,
-            crash_after_step=args.crash_after_step,
-        )
+        task = build_demo_task(state_dir, effect_key=args.effect_key)
+        if args.runtime == "langgraph":
+            from .runtime.langgraph_backend import LangGraphRuntime
+
+            runtime = LangGraphRuntime(
+                task, state_dir, run_id=args.run_id, cancel=cancel,
+                tool_delay=args.tool_delay, crash_after_step=args.crash_after_step,
+                effect_key=args.effect_key,
+            )
+        else:
+            runtime = AgentRuntime(
+                task, state_dir, run_id=args.run_id, durability=Durability(args.durability),
+                cancel=cancel, tool_delay=args.tool_delay,
+                crash_after_step=args.crash_after_step,
+            )
         report = runtime.run(resume=args.resume)
     finally:
         signal.signal(signal.SIGINT, previous)
@@ -92,7 +101,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
             "has_executed": runtime.ledger.has_executed(args.effect_key),
         },
         "sink_rows": len(EffectSink(state_dir).rows()),
-        "checkpoints": [c.kind for c in runtime.checkpointer.history(args.run_id)],
+        "runtime": getattr(runtime, "name", "native"),
+        "checkpoints": ([c.kind for c in runtime.checkpointer.history(args.run_id)]
+                        if hasattr(runtime, "checkpointer") else ["langgraph"]),
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return _EXIT_BY_STATUS.get(report.status, 1)
@@ -268,6 +279,33 @@ def _cmd_tool_retry(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_eval(args: argparse.Namespace) -> int:
+    first = run_suite()
+    second = run_suite()
+    report = {
+        "suite": args.suite,
+        "runs": 2,
+        "deterministic": summarize(first) == summarize(second),
+        "summary": summarize(first),
+    }
+    if args.report == "failures":
+        report["failures"] = summarize(first)["failures"]
+    if args.report == "cases":
+        report["cases"] = [{"id": r.id, "name": r.name, "area": r.area,
+                            "mode": r.mode.value if r.mode else None} for r in first]
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if summarize(first)["failed"] == 0 else 1
+
+
+def _cmd_concurrency(args: argparse.Namespace) -> int:
+    import time
+
+    runner = BoundedRunner(args.limit)
+    runner.map([lambda: time.sleep(args.job_s) for _ in range(args.jobs)])
+    print(json.dumps(runner.stats.as_dict(), ensure_ascii=False))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="harness", description="通用 Agent Harness")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -285,6 +323,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--run-id", default="run-1")
     run.add_argument("--resume", action="store_true")
     run.add_argument("--durability", default="sync", choices=[d.value for d in Durability])
+    run.add_argument("--runtime", default="native", choices=["native", "langgraph"])
     run.add_argument("--tool-delay", type=float, default=0.0)
     run.add_argument("--effect-key", default="demo-effect-1")
     run.add_argument("--crash-after-step", type=int, default=None,
@@ -292,6 +331,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.set_defaults(func=_cmd_run)
 
     for name, func, help_text in (
+        ("eval", _cmd_eval, "工程回归集：20 例 + 失败模式分类"),
+        ("limits", _cmd_concurrency, "并发上限与排队时长"),
         ("tools", _cmd_tools, "工具定义预算：60 个工具时只注入 top-k"),
         ("tool-call", _cmd_tool_call, "调用一个内置工具（区分业务失败与协议失败）"),
         ("tool-retry", _cmd_tool_retry, "超时重试：验证不重复写"),
@@ -322,6 +363,14 @@ def build_parser() -> argparse.ArgumentParser:
                                     choices=[m.value for m in SandboxMode])
             sub_parser.add_argument("--cwd", default=None)
             sub_parser.add_argument("--allow-unsandboxed", action="store_true")
+        if name == "eval":
+            sub_parser.add_argument("--suite", default="core")
+            sub_parser.add_argument("--report", choices=["summary", "failures", "cases"],
+                                    default="summary")
+        if name == "limits":
+            sub_parser.add_argument("--limit", type=int, default=3)
+            sub_parser.add_argument("--jobs", type=int, default=8)
+            sub_parser.add_argument("--job-s", type=float, default=0.05)
         if name == "tools":
             sub_parser.add_argument("--count", type=int, default=60)
             sub_parser.add_argument("--query", default="")

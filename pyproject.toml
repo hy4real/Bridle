@@ -9,7 +9,11 @@ dependencies = []
 harness = "agent_harness.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8.0"]
+dev = [
+    "langgraph>=1.0",
+    "langgraph-checkpoint-sqlite>=3.1.2",
+    "pytest>=8.0",
+]
 
 [build-system]
 requires = ["hatchling"]

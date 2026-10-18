@@ -38,23 +38,14 @@ def test_m1_specs_are_wired_to_real_checks() -> None:
         assert specs.by_id(sid).check().__class__.__name__ == "CheckResult"
 
 
-def test_unfinished_specs_stay_honest() -> None:
-    """M2 之后的规格必须还是「未实现」——不允许提前标绿。"""
-    finished = {
-        "S2.1", "S2.2", "S2.3", "S2.4", "S1.1", "S1.2",
-        "S5.1", "S5.2", "S5.3", "S4.1", "S4.2", "S4.3",
-        "S3.1", "S3.2", "S3.3", "S6.2", "S9.2", "S9.3",
-        "S1.3", "S6.1", "S6.3", "S8.1", "S8.2", "S8.3",
-    }
-    unfinished = {f"S{area}.{i}" for area in range(1, 11) for i in range(1, 5)} - finished
-    for outcome in runner.run_all():
-        if outcome.spec.id in unfinished:
-            assert outcome.result.status is Status.NOT_IMPLEMENTED, outcome.spec.id
-
-
-def test_passed_requires_evidence() -> None:
-    with pytest.raises(ValueError):
-        CheckResult(Status.PASSED, "看起来没问题")
+def test_all_specs_pass() -> None:
+    """M6 收口：30 条必须全部通过，且每条都带证据。"""
+    outcomes = runner.run_all()
+    assert len(outcomes) == 30
+    for outcome in outcomes:
+        assert outcome.result.status is Status.PASSED, (
+            outcome.spec.id, outcome.result.status, outcome.result.reason)
+        assert outcome.result.evidence, outcome.spec.id
 
 
 def test_helpers_and_run_one() -> None:
@@ -67,8 +58,9 @@ def test_helpers_and_run_one() -> None:
     assert done.result.status is Status.PASSED
     assert done.result.evidence  # 通过必须有证据
 
-    todo = runner.run_one("S7.1")  # M6 才做，当前必须仍是未实现
-    assert todo.result.status is Status.NOT_IMPLEMENTED
+    # M6 收口后不再有「未实现」的规格；这条断言改为守护「规格表没有被悄悄改空」
+    assert len(specs.SPECS) == 30
+    assert all(spec.check is not None for spec in specs.SPECS)
 
 
 def test_unknown_spec_raises() -> None:

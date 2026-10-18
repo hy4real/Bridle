@@ -10,12 +10,12 @@
 ```bash
 uv sync --dev
 uv run harness verify --list      # 30 条可验收规格
-uv run harness verify --all       # 逐条跑：24 通过 / 0 失败 / 6 未实现
+uv run harness verify --all       # 逐条跑：30 通过 / 0 失败 / 0 未实现
 uv run harness verify S2.1        # 只跑一条
 ./scripts/ci.sh                   # 单测 + 规格数 + 基线断言
 ```
 
-**当前状态：M5 已交付（24 条通过），剩下 6 条（M6）是评测与框架对照。**
+**当前状态：M6 已交付，30 条规格全部通过（30/30），63 个单测全过。**
 通过数记在 `BASELINE` 里，CI 会比对——**想加通过数必须同时改 BASELINE**，
 没人能悄悄让测试变绿。
 
@@ -133,6 +133,36 @@ uv run harness verify S8.3   # 脱敏失败 → 清空该 span 字符串字段�
 
 **一条诚实标注**：导出的是 **OTLP 形状的 JSON**（`resourceSpans → scopeSpans → spans`），
 不是完整 protobuf。要接真 collector 还得换 exporter——这一点写在 README 里，不夸大。
+
+## M6 做了什么：回归集 + 并发上限 + 双 runtime
+
+```bash
+uv run harness eval --suite core --report failures   # 20 例，跑两遍结果一致
+uv run harness limits --limit 3 --jobs 8             # 在途 ≤3，排队时长进指标
+uv run harness run --state-dir /tmp/s --runtime langgraph
+uv run harness verify S10.2                          # checkpoint 往返 langgraph saver
+```
+
+| 决定 | 证据 |
+| --- | --- |
+| 回归集必须能归因 | 20 例全绿；注入「配额永远放行」后 **E09 被判 `quota_oversold`**，其余 19 例不受影响 |
+| 并发上限要可见 | 8 个任务、上限 3 → `max_in_flight=3`，排队等待被记录 |
+| 双 runtime 要一致 | native 与 langgraph 跑同一 Task：status / steps / 下游写入次数三项相同 |
+| 框架互操作走对方代码 | checkpoint 导出后由 **langgraph 自己的 `SqliteSaver.get_tuple()`** 读回，状态一致 |
+| 「为什么不用框架」要有答案 | `docs/framework-comparison.md` 四节 + `--runtime langgraph` 真 backend |
+
+**一处对原设计的修正**：规格原文写「导出为 langgraph **三表**结构」。实测：LangGraph 的
+SQLite saver 是**两表**（`checkpoints` + `writes`），只有 Postgres saver 才是三表
+（多 `checkpoint_blobs`）。验收按实测写，并把差异写进对照文档。
+
+## 收口状态
+
+| 项 | 数字 |
+| --- | --- |
+| 规格 | 30 / 30 通过，每条带证据 |
+| 单测 | 63 个 |
+| 回归集 | 20 例，pass_rate 1.0，跑两遍一致 |
+| runtime | native（默认）+ langgraph（可选） |
 
 ## 验收长什么样
 

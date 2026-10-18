@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from . import checks_m1, checks_m2, checks_m3, checks_m4, checks_m5
+from . import checks_m1, checks_m2, checks_m3, checks_m4, checks_m5, checks_m6
 from .registry import CheckResult, Spec, not_implemented
 
 _SPECS: list[Spec] = []
@@ -86,9 +86,9 @@ _spec("S6.3", "A6", "token 桶互斥：total = input + output，cache/reasoning 
 
 # A7 评测
 _spec("S7.1", "A7", "工程回归集可复现：固定用例跑两遍通过率一致",
-      "harness eval --suite core", "M6")
+      "harness eval --suite core", "M6", checks_m6.check_s71)
 _spec("S7.2", "A7", "失败样本按失败模式分类，而不是只有「没过」",
-      "harness eval --suite core --report failures", "M6")
+      "harness eval --suite core --report failures", "M6", checks_m6.check_s72)
 
 # A8 可观测
 _spec("S8.1", "A8", "span 名与属性对齐 OTel GenAI 语义约定",
@@ -100,7 +100,7 @@ _spec("S8.3", "A8", "脱敏在导出阶段生效，且 hook 失败不丢整批",
 
 # A9 并发与性能
 _spec("S9.1", "A9", "并发上限生效且排队时长进指标，不是静默变慢",
-      "harness verify S9.1", "M6")
+      "harness verify S9.1", "M6", checks_m6.check_s91)
 _spec("S9.2", "A9", "两类 429 分流：带 retry-after 重试，不带则快速失败",
       "harness verify S9.2", "M4", checks_m4.check_s92)
 _spec("S9.3", "A9", "超时按口径拆分：首字节超时不触发整体重放",
@@ -108,11 +108,11 @@ _spec("S9.3", "A9", "超时按口径拆分：首字节超时不触发整体重�
 
 # A10 框架对照（岗位要求）
 _spec("S10.1", "A10", "同一套验收在 native 与 langgraph 两个 runtime 上通过率一致",
-      "harness verify --all --runtime langgraph", "M6")
+      "harness verify --all --runtime langgraph", "M6", checks_m6.check_s101)
 _spec("S10.2", "A10", "checkpoint 可导出为 langgraph 三表结构，并能反向导入继续跑",
-      "harness checkpoint export --format langgraph", "M6")
+      "harness checkpoint export --format langgraph", "M6", checks_m6.check_s102)
 _spec("S10.3", "A10", "「为什么不用现成框架」有代码答案：真 backend + 对照文档",
-      "python -c \"import agent_harness.runtime.langgraph_backend\"", "M6")
+      "python -c \"import agent_harness.runtime.langgraph_backend\"", "M6", checks_m6.check_s103)
 
 SPECS: tuple[Spec, ...] = tuple(_SPECS)
 
