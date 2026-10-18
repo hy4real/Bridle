@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from . import checks_m1, checks_m2, checks_m3, checks_m4
+from . import checks_m1, checks_m2, checks_m3, checks_m4, checks_m5
 from .registry import CheckResult, Spec, not_implemented
 
 _SPECS: list[Spec] = []
@@ -40,7 +40,7 @@ _spec("S1.1", "A1", "隔离单元是 session，不是同一个进程里的一个
 _spec("S1.2", "A1", "沙箱 ≠ 权限边界：越权拦截在策略层，返回 PERMISSION_DENIED 而非 ENOENT",
       "harness verify S1.2", "M2", checks_m2.check_s12)
 _spec("S1.3", "A1", "配额硬上限用「预留 + 结算」，两个并发请求不能同时穿透余额检查",
-      "harness verify S1.3", "M5")
+      "harness verify S1.3", "M5", checks_m5.check_s13)
 
 # A2 长任务与状态
 _spec("S2.1", "A2", "kill -9 后从 checkpoint 恢复，且副作用账本只有一条",
@@ -78,11 +78,11 @@ _spec("S5.3", "A5", "refusal / finish_reason=length / 内容过滤三条旁路�
 
 # A6 成本
 _spec("S6.1", "A6", "归因账本分层：task → session → turn → call → attempt",
-      "harness cost --run <id> --by turn", "M5")
+      "harness cost --run <id> --by turn", "M5", checks_m5.check_s61)
 _spec("S6.2", "A6", "超预算降级而不是硬失败：切小模型继续或明确 BUDGET_EXCEEDED",
       "harness verify S6.2", "M4", checks_m4.check_s62)
 _spec("S6.3", "A6", "token 桶互斥：total = input + output，cache/reasoning 是子集不相加",
-      "harness verify S6.3", "M5")
+      "harness verify S6.3", "M5", checks_m5.check_s63)
 
 # A7 评测
 _spec("S7.1", "A7", "工程回归集可复现：固定用例跑两遍通过率一致",
@@ -92,11 +92,11 @@ _spec("S7.2", "A7", "失败样本按失败模式分类，而不是只有「没�
 
 # A8 可观测
 _spec("S8.1", "A8", "span 名与属性对齐 OTel GenAI 语义约定",
-      "harness trace --run <id> --format otlp", "M5")
+      "harness trace --run <id> --format otlp", "M5", checks_m5.check_s81)
 _spec("S8.2", "A8", "高基数（session_id / trace_id）不进 metric 标签",
-      "harness verify S8.2", "M5")
+      "harness verify S8.2", "M5", checks_m5.check_s82)
 _spec("S8.3", "A8", "脱敏在导出阶段生效，且 hook 失败不丢整批",
-      "harness verify S8.3", "M5")
+      "harness verify S8.3", "M5", checks_m5.check_s83)
 
 # A9 并发与性能
 _spec("S9.1", "A9", "并发上限生效且排队时长进指标，不是静默变慢",

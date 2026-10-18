@@ -10,12 +10,12 @@
 ```bash
 uv sync --dev
 uv run harness verify --list      # 30 条可验收规格
-uv run harness verify --all       # 逐条跑：18 通过 / 0 失败 / 12 未实现
+uv run harness verify --all       # 逐条跑：24 通过 / 0 失败 / 6 未实现
 uv run harness verify S2.1        # 只跑一条
 ./scripts/ci.sh                   # 单测 + 规格数 + 基线断言
 ```
 
-**当前状态：M4 已交付（18 条通过），其余 12 条按里程碑逐条变绿。**
+**当前状态：M5 已交付（24 条通过），剩下 6 条（M6）是评测与框架对照。**
 通过数记在 `BASELINE` 里，CI 会比对——**想加通过数必须同时改 BASELINE**，
 没人能悄悄让测试变绿。
 
@@ -111,6 +111,28 @@ uv run harness verify S9.3   # 首字节超时只调用 1 次（不重放）
 **实现细节上的一个坑**：假模型默认 HTTP/1.0 会立刻断连，客户端 `conn.sock` 变 `None`，
 没法给 body 设置独立超时。改成 `protocol_version = "HTTP/1.1"` 走 keep-alive 才测得出
 「头已到、body 卡住」这种总超时形态。
+
+## M5 做了什么：观测、成本账本、配额
+
+```bash
+uv run harness verify S1.3   # 8 个并发各要 80、余额 100 → 只允许 1 个
+uv run harness verify S6.1   # 五层账本：task/session/turn/call/attempt
+uv run harness verify S6.3   # cache 桶超出 input → 写入时直接拒绝
+uv run harness verify S8.1   # span 名与 7 个 gen_ai.* 属性对齐 OTel
+uv run harness verify S8.2   # session_id / trace_id 进指标 → 抛异常
+uv run harness verify S8.3   # 脱敏失败 → 清空该 span 字符串字段，不丢整批、不泄露
+```
+
+| 决定 | 理由 |
+| --- | --- |
+| 可用额度 = 已授权 − 已结算 − **在途预留** | 「检查 + 扣减」在并发下必然穿透；预留是唯一能保证硬上限的原子操作 |
+| 账本记**加权 token 单位**，不记钱 | 价格随厂商与时间变，写死假价格就是编造数字；真实成本由部署方按自己价目换算 |
+| 桶互斥在**写入时**强制 | 等报表出来才发现重叠，账单已经错了 |
+| 指标标签是白名单 | 高基数进指标会让监控系统自己先崩 |
+| 脱敏失败 = 清空该字段 | 宁可丢信息，不可泄露；但**不能丢整批 span** |
+
+**一条诚实标注**：导出的是 **OTLP 形状的 JSON**（`resourceSpans → scopeSpans → spans`），
+不是完整 protobuf。要接真 collector 还得换 exporter——这一点写在 README 里，不夸大。
 
 ## 验收长什么样
 

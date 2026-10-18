@@ -44,6 +44,7 @@ def test_unfinished_specs_stay_honest() -> None:
         "S2.1", "S2.2", "S2.3", "S2.4", "S1.1", "S1.2",
         "S5.1", "S5.2", "S5.3", "S4.1", "S4.2", "S4.3",
         "S3.1", "S3.2", "S3.3", "S6.2", "S9.2", "S9.3",
+        "S1.3", "S6.1", "S6.3", "S8.1", "S8.2", "S8.3",
     }
     unfinished = {f"S{area}.{i}" for area in range(1, 11) for i in range(1, 5)} - finished
     for outcome in runner.run_all():
@@ -66,7 +67,7 @@ def test_helpers_and_run_one() -> None:
     assert done.result.status is Status.PASSED
     assert done.result.evidence  # 通过必须有证据
 
-    todo = runner.run_one("S6.1")  # M5 才做，当前必须仍是未实现
+    todo = runner.run_one("S7.1")  # M6 才做，当前必须仍是未实现
     assert todo.result.status is Status.NOT_IMPLEMENTED
 
 
