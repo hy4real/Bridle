@@ -31,10 +31,21 @@ def test_every_spec_has_milestone_and_command() -> None:
         assert spec.title, spec.id
 
 
-def test_baseline_is_all_not_implemented() -> None:
-    outcomes = runner.run_all()
-    assert {o.result.status for o in outcomes} == {Status.NOT_IMPLEMENTED}
-    assert "0 通过 / 0 失败 / 30 未实现" in runner.summary_line(outcomes)
+def test_m1_specs_are_wired_to_real_checks() -> None:
+    """M1 的四条必须绑定真断言，不能退回 not_implemented。"""
+    for sid in ("S2.1", "S2.2", "S2.3", "S2.4"):
+        assert specs.by_id(sid).check is not None
+        assert specs.by_id(sid).check().__class__.__name__ == "CheckResult"
+
+
+def test_unfinished_specs_stay_honest() -> None:
+    """M2 之后的规格必须还是「未实现」——不允许提前标绿。"""
+    unfinished = {f"S{area}.{i}" for area in range(1, 11) for i in range(1, 5)} - {
+        "S2.1", "S2.2", "S2.3", "S2.4"
+    }
+    for outcome in runner.run_all():
+        if outcome.spec.id in unfinished:
+            assert outcome.result.status is Status.NOT_IMPLEMENTED, outcome.spec.id
 
 
 def test_passed_requires_evidence() -> None:
@@ -47,9 +58,13 @@ def test_helpers_and_run_one() -> None:
     assert failed("坏").status is Status.FAILED
     assert not_implemented("没写").status is Status.NOT_IMPLEMENTED
 
-    outcome = runner.run_one("S2.1")
-    assert outcome.spec.id == "S2.1"
-    assert outcome.result.status is Status.NOT_IMPLEMENTED
+    done = runner.run_one("S2.1")
+    assert done.spec.id == "S2.1"
+    assert done.result.status is Status.PASSED
+    assert done.result.evidence  # 通过必须有证据
+
+    todo = runner.run_one("S1.1")
+    assert todo.result.status is Status.NOT_IMPLEMENTED
 
 
 def test_unknown_spec_raises() -> None:

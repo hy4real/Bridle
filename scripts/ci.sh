@@ -11,7 +11,12 @@ count=$(uv run harness verify --list --count)
 [ "$count" = "30" ] || { echo "规格数不是 30，实际 $count"; exit 1; }
 echo "规格数 $count OK"
 
-echo "== 3/3 基线：30 条必须全部未实现（M0）=="
+echo "== 3/3 基线：不许有「失败」，通过数必须等于预期 =="
 uv run harness verify --all --allow-fail | tee report.txt
-grep -q "0 通过 / 0 失败 / 30 未实现" report.txt || { echo "基线不符：M0 应全部未实现"; exit 1; }
-echo "基线 OK"
+grep -q "0 失败" report.txt || { echo "有规格失败"; exit 1; }
+grep -q "$(cat BASELINE)" report.txt || {
+  echo "通过数变化：预期 $(cat BASELINE)，实际 $(tail -1 report.txt)"
+  echo "如果这是有意的，请同时更新 BASELINE 与 README 的状态节"
+  exit 1
+}
+echo "基线 OK（$(cat BASELINE)）"

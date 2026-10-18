@@ -9,25 +9,28 @@ M0 阶段：全部 check 返回 `not_implemented`，这是**基线**，不是缺
 
 from __future__ import annotations
 
+from typing import Callable
+
+from . import checks_m1
 from .registry import CheckResult, Spec, not_implemented
 
 _SPECS: list[Spec] = []
 
 
 def _spec(
-    sid: str, area: str, title: str, command: str, milestone: str
+    sid: str,
+    area: str,
+    title: str,
+    command: str,
+    milestone: str,
+    check: Callable[[], CheckResult] | None = None,
 ) -> None:
-    _SPECS.append(
-        Spec(
-            id=sid,
-            area=area,
-            title=title,
-            command=command,
-            milestone=milestone,
-            check=lambda sid=sid, milestone=milestone: not_implemented(
-                f"{milestone} 未开始：{sid} 的断言函数尚未实现"
-            ),
+    if check is None:
+        check = lambda sid=sid, milestone=milestone: not_implemented(  # noqa: E731
+            f"{milestone} 未开始：{sid} 的断言函数尚未实现"
         )
+    _SPECS.append(
+        Spec(id=sid, area=area, title=title, command=command, milestone=milestone, check=check)
     )
 
 
@@ -41,13 +44,13 @@ _spec("S1.3", "A1", "配额硬上限用「预留 + 结算」，两个并发请�
 
 # A2 长任务与状态
 _spec("S2.1", "A2", "kill -9 后从 checkpoint 恢复，且副作用账本只有一条",
-      "harness verify S2.1", "M1")
+      "harness verify S2.1", "M1", checks_m1.check_s21)
 _spec("S2.2", "A2", "恢复会重跑节点，节点内副作用靠幂等键收敛",
-      "harness verify S2.2", "M1")
+      "harness verify S2.2", "M1", checks_m1.check_s22)
 _spec("S2.3", "A2", "取消是协作式传播：在途工具收到 cancel，账本记 cancelled",
-      "harness verify S2.3", "M1")
+      "harness verify S2.3", "M1", checks_m1.check_s23)
 _spec("S2.4", "A2", "状态存「意图 + 标识 + 结果」三件套，能判定是否已执行",
-      "harness verify S2.4", "M1")
+      "harness verify S2.4", "M1", checks_m1.check_s24)
 
 # A3 上下文工程
 _spec("S3.1", "A3", "压缩是 summary + 未压缩尾部双层，压完仍记得早期事实",

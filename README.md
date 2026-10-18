@@ -10,14 +10,36 @@
 ```bash
 uv sync --dev
 uv run harness verify --list      # 30 条可验收规格
-uv run harness verify --all       # 逐条跑（M0 阶段全部「未实现」，退出码 1）
+uv run harness verify --all       # 逐条跑：4 通过 / 0 失败 / 26 未实现
 uv run harness verify S2.1        # 只跑一条
 ./scripts/ci.sh                   # 单测 + 规格数 + 基线断言
 ```
 
-**M0 的状态是「30 条全部未实现」，这是基线，不是缺陷。** CI 会断言这个基线，
-防止有人把断言写成恒真来「让测试变绿」。每完成一个里程碑，对应规格从
-「未实现」变成「通过」，README 的这一节同步更新。
+**当前状态：M1 已交付（4 条通过），其余 26 条按里程碑逐条变绿。**
+通过数记在 `BASELINE` 里，CI 会比对——**想加通过数必须同时改 BASELINE**，
+没人能悄悄让测试变绿。
+
+## M1 做了什么：runtime
+
+```bash
+# 1) 正常跑：三步 + 最终 checkpoint
+uv run harness run --state-dir /tmp/demo
+
+# 2) 复现最危险的窗口：副作用已写、checkpoint 未写时进程被杀
+uv run harness run --state-dir /tmp/demo2 --crash-after-step 1   # 退出码 137
+uv run harness run --state-dir /tmp/demo2 --resume               # 重跑那一步，下游仍 1 条
+
+# 3) 协作式取消：SIGINT 后账本记 cancelled，下游没被写
+uv run harness run --state-dir /tmp/demo3 --tool-delay 2   # 另开一个终端 kill -INT
+```
+
+三条设计决定：
+
+| 决定 | 理由 |
+| --- | --- |
+| checkpoint 拆三表（`checkpoints`/`blobs`/`writes`），主键含 `checkpoint_ns` | 与 LangGraph 同构；小元数据与大值分开，读元数据不必反序列化整份状态 |
+| 恢复 = 从 `step_index` 重跑整步，不是续行 | 只存 channel 值就能恢复，不必序列化栈帧；代价是步骤必须幂等 |
+| 账本先落**意图**再执行，下游按键 upsert | 端到端做不到 exactly-once；at-least-once + 幂等才是可实现的保证 |
 
 ## 验收长什么样
 

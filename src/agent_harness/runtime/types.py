@@ -1,0 +1,122 @@
+"""runtime 的公共类型。"""
+
+from __future__ import annotations
+
+import threading
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Callable
+
+
+class Durability(str, Enum):
+    """checkpoint 写入时机。
+
+    exit  只在运行结束时落盘。崩溃 = 这次运行全丢。性能最好，长任务最脆弱。
+    async 每步异步落盘。可能丢掉"正在写的那一步"（小窗口）。
+    sync  每步同步落盘。慢，但崩溃后一定恢复到最近完成的步。
+    """
+
+    EXIT = "exit"
+    ASYNC = "async"
+    SYNC = "sync"
+
+
+class RunStatus(str, Enum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    INTERRUPTED = "interrupted"
+    CANCELLED = "cancelled"
+    CRASHED = "crashed"
+
+
+class Cancelled(Exception):
+    """协作式取消：由工具/步骤在检查点主动抛出，不是被 kill。"""
+
+
+class NodeInterrupt(Exception):
+    """中断：恢复时**整个节点从头重跑**（LangGraph 语义）。
+
+    所以节点里的副作用必须幂等——这是 S2.2 要证明的东西。
+    """
+
+    def __init__(self, payload: dict[str, Any] | None = None) -> None:
+        super().__init__("node interrupted")
+        self.payload = payload or {}
+
+
+@dataclass
+class CancelToken:
+    """一个事件，不是信号处理器的私货：谁都能查、谁都能等。"""
+
+    _event: threading.Event = field(default_factory=threading.Event)
+
+    def cancel(self) -> None:
+        self._event.set()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._event.is_set()
+
+    def raise_if_cancelled(self) -> None:
+        if self.cancelled:
+            raise Cancelled("cancelled by token")
+
+    def wait(self, timeout: float) -> bool:
+        return self._event.wait(timeout)
+
+
+@dataclass
+class Checkpoint:
+    thread_id: str
+    checkpoint_id: str
+    state: dict[str, Any]
+    parent_checkpoint_id: str | None = None
+    checkpoint_ns: str = ""
+    ts: float = 0.0
+    kind: str = "step"
+
+
+@dataclass
+class Step:
+    """一个可重跑的步骤。重跑是恢复的语义，不是异常路径。"""
+
+    name: str
+    action: Callable[["StepContext"], None]
+
+
+@dataclass
+class Task:
+    name: str
+    steps: list[Step]
+
+
+@dataclass
+class StepContext:
+    """步骤能看到的东西。
+
+    刻意不给"当前是第几次执行"——步骤必须假设自己会被重跑，
+    attempt 计数在 ledger 里，由幂等键收敛。
+    """
+
+    state: dict[str, Any]
+    ledger: Any
+    cancel: CancelToken
+    tool_delay: float = 0.0
+
+    def sleep_or_cancel(self, seconds: float) -> None:
+        """模拟慢工具：分段等待，保证取消能在 100ms 级别生效。"""
+        remaining = seconds
+        while remaining > 0:
+            self.cancel.raise_if_cancelled()
+            slice_s = min(0.05, remaining)
+            self.cancel.wait(slice_s)
+            remaining -= slice_s
+
+
+@dataclass
+class RunReport:
+    run_id: str
+    status: RunStatus
+    steps_run: list[str] = field(default_factory=list)
+    replayed_steps: list[str] = field(default_factory=list)
+    error: str | None = None
