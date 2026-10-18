@@ -15,7 +15,7 @@ uv run harness verify S2.1        # 只跑一条
 ./scripts/ci.sh                   # 单测 + 规格数 + 基线断言
 ```
 
-**当前状态：M6 已交付，30 条规格全部通过（30/30），63 个单测全过。**
+**当前状态：M6 已交付，30 条规格全部通过（30/30），65 个单测全过。**
 通过数记在 `BASELINE` 里，CI 会比对——**想加通过数必须同时改 BASELINE**，
 没人能悄悄让测试变绿。
 
@@ -160,7 +160,7 @@ SQLite saver 是**两表**（`checkpoints` + `writes`），只有 Postgres saver
 | 项 | 数字 |
 | --- | --- |
 | 规格 | 30 / 30 通过，每条带证据 |
-| 单测 | 63 个 |
+| 单测 | 65 个 |
 | 回归集 | 20 例，pass_rate 1.0，跑两遍一致 |
 | runtime | native（默认）+ langgraph（可选） |
 
