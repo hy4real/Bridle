@@ -82,3 +82,22 @@ def test_gateway_downgrades_after_budget_exceeded() -> None:
         second = gateway.complete([{"role": "user", "content": "hi"}])
     assert second.model == "deepseek-flash"
     assert any("降级" in d for d in second.decisions)
+
+
+def test_reasoning_tokens_must_be_subset_of_output() -> None:
+    with pytest.raises(ValueError):
+        Usage(input_tokens=10, output_tokens=5, reasoning_tokens=9)
+
+
+def test_cache_read_falls_back_to_deepseek_field() -> None:
+    """真模型冒烟发现的差异：有的供应商只给 prompt_cache_hit_tokens。"""
+    usage_payload = {
+        "prompt_tokens": 296,
+        "completion_tokens": 54,
+        "prompt_cache_hit_tokens": 128,   # 没有 prompt_tokens_details
+        "completion_tokens_details": {"reasoning_tokens": 15},
+    }
+    with FakeModelServer(ScriptedModel([{"content": "ok", "usage": usage_payload}])) as server:
+        completion = _gateway(server.base_url).complete([{"role": "user", "content": "hi"}])
+    assert completion.usage.cache_read_tokens == 128
+    assert completion.usage.reasoning_tokens == 15

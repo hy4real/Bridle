@@ -15,7 +15,7 @@ uv run harness verify S2.1        # 只跑一条
 ./scripts/ci.sh                   # 单测 + 规格数 + 基线断言
 ```
 
-**当前状态：M6 已交付，30 条规格全部通过（30/30），65 个单测全过。**
+**当前状态：M6 已交付，30 条规格全部通过（30/30），67 个单测全过。**
 通过数记在 `BASELINE` 里，CI 会比对——**想加通过数必须同时改 BASELINE**，
 没人能悄悄让测试变绿。
 
@@ -160,9 +160,26 @@ SQLite saver 是**两表**（`checkpoints` + `writes`），只有 Postgres saver
 | 项 | 数字 |
 | --- | --- |
 | 规格 | 30 / 30 通过，每条带证据 |
-| 单测 | 65 个 |
+| 单测 | 67 个 |
 | 回归集 | 20 例，pass_rate 1.0，跑两遍一致 |
 | runtime | native（默认）+ langgraph（可选） |
+
+## 真模型冒烟（2026-10-18）
+
+```bash
+set -a; source ~/.env.secrets; set +a
+uv run python scripts/smoke_real_model.py
+```
+
+三个场景跑通（工具调用 / 结构化输出 / 多轮记忆），并暴露两条假模型测不出的差异：
+
+1. **`reasoning_tokens` 吃掉 `max_tokens`**：`deepseek-flash` 在结构化场景里 184 个输出 token 中
+   158 是 reasoning，`max_tokens=200` 时 `content` 被截断成空串。改成 800 后通过。
+2. **缓存命中字段有两套命名**：只读 `prompt_tokens_details.cached_tokens` 会在只提供
+   `prompt_cache_hit_tokens` 的供应商上静默变成 0——已改成两级回退并补测。
+
+完整记录见 [`docs/real-model-smoke.md`](docs/real-model-smoke.md)，其中也写清了**仍然没被覆盖的部分**
+（真模型上无法触发 429/超时/refusal，缓存命中率没有规模数据）。
 
 ## 验收长什么样
 
