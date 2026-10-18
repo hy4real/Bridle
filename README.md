@@ -10,12 +10,12 @@
 ```bash
 uv sync --dev
 uv run harness verify --list      # 30 条可验收规格
-uv run harness verify --all       # 逐条跑：4 通过 / 0 失败 / 26 未实现
+uv run harness verify --all       # 逐条跑：9 通过 / 0 失败 / 21 未实现
 uv run harness verify S2.1        # 只跑一条
 ./scripts/ci.sh                   # 单测 + 规格数 + 基线断言
 ```
 
-**当前状态：M1 已交付（4 条通过），其余 26 条按里程碑逐条变绿。**
+**当前状态：M2 已交付（9 条通过），其余 21 条按里程碑逐条变绿。**
 通过数记在 `BASELINE` 里，CI 会比对——**想加通过数必须同时改 BASELINE**，
 没人能悄悄让测试变绿。
 
@@ -40,6 +40,32 @@ uv run harness run --state-dir /tmp/demo3 --tool-delay 2   # 另开一个终端 
 | checkpoint 拆三表（`checkpoints`/`blobs`/`writes`），主键含 `checkpoint_ns` | 与 LangGraph 同构；小元数据与大值分开，读元数据不必反序列化整份状态 |
 | 恢复 = 从 `step_index` 重跑整步，不是续行 | 只存 channel 值就能恢复，不必序列化栈帧；代价是步骤必须幂等 |
 | 账本先落**意图**再执行，下游按键 upsert | 端到端做不到 exactly-once；at-least-once + 幂等才是可实现的保证 |
+
+## M2 做了什么：策略三层 + 沙箱
+
+```bash
+uv run harness sandbox-probe                      # 沙箱自检（起不来就 exit 13）
+uv run harness policy-check --cmd "rm -rf /x" --deny-cmd "rm -rf *" --allow-cmd "*"
+uv run harness exec --session A --state-dir /tmp/s --cmd "echo hi > f.txt" \
+     --sandbox-mode workspace-write --allow-cmd "*"
+uv run harness exec --session C --state-dir /tmp/s --cmd "cat secret" \
+     --deny-read ~/.ssh --sandbox-mode read-only --allow-cmd "*"
+uv run harness extract --fake-script refusal.json --sink-dir /tmp/sink   # 三条旁路 → exit 14
+```
+
+四件事被钉住了：
+
+| 决定 | 证据 |
+| --- | --- |
+| 隔离单元是 **session** | 两个 session 的工作区不同，A 写的文件 B 看不到（S1.1） |
+| 越权拦截在**策略层**，不是"文件不存在" | deny 后返回 EPERM（`Errno 1 Operation not permitted`），不是 ENOENT（S1.2） |
+| 沙箱起不来就 **fail-closed** | exit 13 `SANDBOX_UNAVAILABLE`；放行必须显式 `--allow-unsandboxed` 且打印警告（S5.1） |
+| **deny > ask > allow**，`approval=never` 把 ask 降级为拒绝 | 更具体的 allow（`rm *`）也突破不了 deny（`rm -rf *`）（S5.2） |
+| 结构化输出三条旁路都不写下游 | `refusal` / `length` / `content_filter` → exit 14，下游 0 行（S5.3） |
+
+**一个必须记住的坑**：Seatbelt 的路径要先 `realpath`。`/var/folders/...` 实际是
+`/private/var/folders/...`，不做 realpath 时 deny 规则**不报错也不生效**——
+测试 `test_seatbelt_realpath_is_required_to_match` 专门守这件事。
 
 ## 验收长什么样
 

@@ -14,11 +14,19 @@ import signal
 import sys
 from pathlib import Path
 
+from .model import Termination, classify_choice
+from .policy import ApprovalPolicy, CommandRules, Decision, PolicyEngine, Rule, SandboxMode
 from .runtime import AgentRuntime, Durability, RunStatus
+from .runner_exec import run_exec
+from .sandbox import SandboxUnavailable, build_backend
 from .runtime.demo import EffectSink, build_demo_task
 from .runtime.types import CancelToken
 from .verify import runner, specs
 from .verify.registry import Status
+
+EXIT_POLICY_DENIED = 12
+EXIT_SANDBOX_UNAVAILABLE = 13
+EXIT_STRUCTURED_ABORTED = 14
 
 _EXIT_BY_STATUS = {
     RunStatus.COMPLETED: 0,
@@ -85,6 +93,108 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return _EXIT_BY_STATUS.get(report.status, 1)
 
 
+def _cmd_sandbox_probe(args: argparse.Namespace) -> int:
+    try:
+        backend = build_backend(
+            writable_root=None if args.mode == "read-only" else Path(args.cwd or "."),
+            allow_unsandboxed=args.allow_unsandboxed,
+        )
+    except SandboxUnavailable as error:
+        print(json.dumps({"ok": False, "code": "SANDBOX_UNAVAILABLE", "error": str(error)},
+                         ensure_ascii=False))
+        return EXIT_SANDBOX_UNAVAILABLE
+    caps = backend.capabilities()
+    print(json.dumps({"ok": True, "backend": backend.name,
+                      "caps": {"fs_read": caps.fs_read, "fs_write": caps.fs_write, "net": caps.net}},
+                     ensure_ascii=False))
+    return 0
+
+
+def _cmd_policy_check(args: argparse.Namespace) -> int:
+    engine = _build_engine(args)
+    verdict = engine.decide(args.cmd)
+    print(json.dumps({"command": args.cmd, "decision": verdict.decision.value,
+                      "layer": verdict.layer, "rule": verdict.rule_id, "reason": verdict.reason},
+                     ensure_ascii=False))
+    return 0
+
+
+def _build_engine(args: argparse.Namespace) -> PolicyEngine:
+    rules = CommandRules()
+    for index, pattern in enumerate(args.deny_cmd or [], start=1):
+        rules.add(Rule(f"deny-{index}", Decision.FORBID, pattern))
+    for index, pattern in enumerate(args.ask_cmd or [], start=1):
+        rules.add(Rule(f"ask-{index}", Decision.PROMPT, pattern))
+    for index, pattern in enumerate(args.allow_cmd or [], start=1):
+        rules.add(Rule(f"allow-{index}", Decision.ALLOW, pattern))
+    return PolicyEngine(
+        rules=rules,
+        approval=ApprovalPolicy(args.approval),
+        sandbox_mode=SandboxMode(args.sandbox_mode),
+    )
+
+
+def _cmd_exec(args: argparse.Namespace) -> int:
+    engine = _build_engine(args)
+    verdict = engine.decide(args.cmd)
+    base = {"session": args.session, "command": args.cmd,
+            "decision": {"effect": verdict.decision.value, "layer": verdict.layer,
+                         "rule": verdict.rule_id, "reason": verdict.reason}}
+
+    if verdict.decision is not Decision.ALLOW:
+        print(json.dumps({**base, "executed": False, "code": "POLICY_DENIED"}, ensure_ascii=False))
+        return EXIT_POLICY_DENIED
+
+    try:
+        result, workspace = run_exec(
+            session=args.session, command=args.cmd, state_dir=Path(args.state_dir),
+            sandbox_mode=SandboxMode(args.sandbox_mode),
+            deny_read=tuple(args.deny_read or ()), deny_write=tuple(args.deny_write or ()),
+            allow_unsandboxed=args.allow_unsandboxed, timeout_s=args.timeout,
+        )
+    except SandboxUnavailable as error:
+        print(json.dumps({**base, "executed": False, "code": "SANDBOX_UNAVAILABLE",
+                          "error": str(error)}, ensure_ascii=False))
+        return EXIT_SANDBOX_UNAVAILABLE
+
+    print(json.dumps({**base, "executed": True, "workspace": str(workspace),
+                      "backend": result.backend, "exit_code": result.exit_code,
+                      "stdout": result.stdout, "stderr": result.stderr,
+                      "denied": result.denied}, ensure_ascii=False))
+    return 0
+
+
+def _cmd_extract(args: argparse.Namespace) -> int:
+    """结构化输出验收：三种非正常终止都不许写下游（S5.3）。"""
+    import urllib.request
+
+    from .fake_model.server import FakeModelServer, ScriptedModel
+
+    steps = json.loads(Path(args.fake_script).read_text(encoding="utf-8"))
+    model = ScriptedModel(steps)
+    with FakeModelServer(model) as server:
+        request = urllib.request.Request(
+            f"{server.base_url}/chat/completions",
+            data=json.dumps({"messages": [{"role": "user", "content": "extract"}]}).encode(),
+            headers={"content-type": "application/json"}, method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            payload = json.loads(response.read())
+
+    choice = payload["choices"][0]
+    termination, detail = classify_choice(choice)
+    written = False
+    if termination is Termination.OK:
+        from .runtime.demo import EffectSink
+        sink = EffectSink(Path(args.sink_dir))
+        sink.upsert(args.key, {"content": choice["message"].get("content")})
+        written = True
+
+    print(json.dumps({"termination": termination.value, "detail": detail,
+                      "written_downstream": written}, ensure_ascii=False))
+    return 0 if termination is Termination.OK else EXIT_STRUCTURED_ABORTED
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="harness", description="通用 Agent Harness")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -107,6 +217,40 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--crash-after-step", type=int, default=None,
                      help="在第 N 步执行完、checkpoint 写盘前直接 os._exit(137)（复现最危险的窗口）")
     run.set_defaults(func=_cmd_run)
+
+    for name, func, help_text in (
+        ("sandbox-probe", _cmd_sandbox_probe, "检查沙箱后端是否可用（fail-closed 自检）"),
+        ("policy-check", _cmd_policy_check, "只做策略判定，不执行"),
+        ("exec", _cmd_exec, "在会话工作区里执行一条命令（过策略 + 过沙箱）"),
+        ("extract", _cmd_extract, "结构化输出分类：三条旁路不写下游"),
+    ):
+        sub_parser = sub.add_parser(name, help=help_text)
+        if name in ("exec", "policy-check"):
+            sub_parser.add_argument("--cmd", required=True)
+            sub_parser.add_argument("--deny-cmd", action="append", default=[])
+            sub_parser.add_argument("--ask-cmd", action="append", default=[])
+            sub_parser.add_argument("--allow-cmd", action="append", default=[])
+            sub_parser.add_argument("--approval", default="on-request",
+                                    choices=[a.value for a in ApprovalPolicy])
+            sub_parser.add_argument("--sandbox-mode", default="read-only",
+                                    choices=[m.value for m in SandboxMode])
+            sub_parser.add_argument("--allow-unsandboxed", action="store_true")
+        if name == "exec":
+            sub_parser.add_argument("--session", required=True)
+            sub_parser.add_argument("--state-dir", required=True)
+            sub_parser.add_argument("--deny-read", action="append", default=[])
+            sub_parser.add_argument("--deny-write", action="append", default=[])
+            sub_parser.add_argument("--timeout", type=float, default=30.0)
+        if name == "sandbox-probe":
+            sub_parser.add_argument("--mode", default="read-only",
+                                    choices=[m.value for m in SandboxMode])
+            sub_parser.add_argument("--cwd", default=None)
+            sub_parser.add_argument("--allow-unsandboxed", action="store_true")
+        if name == "extract":
+            sub_parser.add_argument("--fake-script", required=True)
+            sub_parser.add_argument("--sink-dir", required=True)
+            sub_parser.add_argument("--key", default="extract-1")
+        sub_parser.set_defaults(func=func)
     return parser
 
 

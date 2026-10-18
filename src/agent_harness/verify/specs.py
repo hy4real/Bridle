@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from . import checks_m1
+from . import checks_m1, checks_m2
 from .registry import CheckResult, Spec, not_implemented
 
 _SPECS: list[Spec] = []
@@ -36,9 +36,9 @@ def _spec(
 
 # A1 多租户与隔离
 _spec("S1.1", "A1", "隔离单元是 session，不是同一个进程里的一个变量",
-      "harness verify S1.1", "M2")
+      "harness verify S1.1", "M2", checks_m2.check_s11)
 _spec("S1.2", "A1", "沙箱 ≠ 权限边界：越权拦截在策略层，返回 PERMISSION_DENIED 而非 ENOENT",
-      "harness verify S1.2", "M2")
+      "harness verify S1.2", "M2", checks_m2.check_s12)
 _spec("S1.3", "A1", "配额硬上限用「预留 + 结算」，两个并发请求不能同时穿透余额检查",
       "harness verify S1.3", "M5")
 
@@ -70,11 +70,11 @@ _spec("S4.3", "A4", "业务失败（is_error）与协议失败（异常）走不
 
 # A5 可靠性与护栏
 _spec("S5.1", "A5", "沙箱不可用时 fail-closed（拒绝启动），不是裸跑",
-      "harness verify S5.1", "M2")
+      "harness verify S5.1", "M2", checks_m2.check_s51)
 _spec("S5.2", "A5", "deny 优先于 allow，allow 无法为 deny 开例外",
-      "harness verify S5.2", "M2")
+      "harness verify S5.2", "M2", checks_m2.check_s52)
 _spec("S5.3", "A5", "refusal / finish_reason=length / 内容过滤三条旁路都不写入下游",
-      "harness verify S5.3", "M2")
+      "harness verify S5.3", "M2", checks_m2.check_s53)
 
 # A6 成本
 _spec("S6.1", "A6", "归因账本分层：task → session → turn → call → attempt",

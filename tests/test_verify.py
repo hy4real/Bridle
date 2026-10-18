@@ -40,9 +40,8 @@ def test_m1_specs_are_wired_to_real_checks() -> None:
 
 def test_unfinished_specs_stay_honest() -> None:
     """M2 之后的规格必须还是「未实现」——不允许提前标绿。"""
-    unfinished = {f"S{area}.{i}" for area in range(1, 11) for i in range(1, 5)} - {
-        "S2.1", "S2.2", "S2.3", "S2.4"
-    }
+    finished = {"S2.1", "S2.2", "S2.3", "S2.4", "S1.1", "S1.2", "S5.1", "S5.2", "S5.3"}
+    unfinished = {f"S{area}.{i}" for area in range(1, 11) for i in range(1, 5)} - finished
     for outcome in runner.run_all():
         if outcome.spec.id in unfinished:
             assert outcome.result.status is Status.NOT_IMPLEMENTED, outcome.spec.id
@@ -63,7 +62,7 @@ def test_helpers_and_run_one() -> None:
     assert done.result.status is Status.PASSED
     assert done.result.evidence  # 通过必须有证据
 
-    todo = runner.run_one("S1.1")
+    todo = runner.run_one("S3.1")  # M4 才做，M2 阶段必须还是未实现
     assert todo.result.status is Status.NOT_IMPLEMENTED
 
 
