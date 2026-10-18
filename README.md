@@ -10,12 +10,12 @@
 ```bash
 uv sync --dev
 uv run harness verify --list      # 30 条可验收规格
-uv run harness verify --all       # 逐条跑：12 通过 / 0 失败 / 18 未实现
+uv run harness verify --all       # 逐条跑：18 通过 / 0 失败 / 12 未实现
 uv run harness verify S2.1        # 只跑一条
 ./scripts/ci.sh                   # 单测 + 规格数 + 基线断言
 ```
 
-**当前状态：M3 已交付（12 条通过），其余 18 条按里程碑逐条变绿。**
+**当前状态：M4 已交付（18 条通过），其余 12 条按里程碑逐条变绿。**
 通过数记在 `BASELINE` 里，CI 会比对——**想加通过数必须同时改 BASELINE**，
 没人能悄悄让测试变绿。
 
@@ -87,6 +87,30 @@ uv run harness tool-retry --sink-dir /tmp/s --timeout 0.1               # 超时
 
 **注意**：token 估算是 `CJK 1 字 ≈ 1 token、ASCII 4 字符 ≈ 1 token` 的粗估，
 只用于预算，不用于计费——计费仍以模型返回的 `usage` 为准。这条差异写在代码注释里。
+
+## M4 做了什么：上下文与模型网关
+
+```bash
+uv run harness verify S3.1   # 压缩：19,329 → 4,031 token，早期事实仍在摘要里
+uv run harness verify S3.2   # 前缀 hash 两轮一致；system prompt 写日期会变 hash
+uv run harness verify S3.3   # input=1000 / cache_read=640：子集关系，不重复相加
+uv run harness verify S6.2   # 超预算 → 降级到 flash 继续，不是整单失败
+uv run harness verify S9.2   # 429 带 retry-after → 第 3 次成功；不带 → 立刻失败
+uv run harness verify S9.3   # 首字节超时只调用 1 次（不重放）
+```
+
+| 坑 | 具体表现 |
+| --- | --- |
+| 压缩 ≠ 截断 | 双层：`summary` 前置注入 + 未压缩尾部；摘要保留早期事实，压完还能回答 |
+| 前缀必须字节稳定 | `build_request()` 把 system prompt 放第一位；`has_dynamic_content()` 抓日期/时间/星期 |
+| token 桶是包含关系 | `input` 是总量，`cache_read`/`cache_write` 是子集；`total = input + output` |
+| 超时要分口径 | 首字节超时 → 不重放（上游还没干活）；总超时 → 按重试策略 |
+| 429 分两类 | 带 `retry-after` 是限速；不带是配额耗尽，重试白烧 |
+| 超预算要降级 | 换便宜模型继续，并记录决策 |
+
+**实现细节上的一个坑**：假模型默认 HTTP/1.0 会立刻断连，客户端 `conn.sock` 变 `None`，
+没法给 body 设置独立超时。改成 `protocol_version = "HTTP/1.1"` 走 keep-alive 才测得出
+「头已到、body 卡住」这种总超时形态。
 
 ## 验收长什么样
 

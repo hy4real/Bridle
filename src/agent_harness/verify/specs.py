@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from . import checks_m1, checks_m2, checks_m3
+from . import checks_m1, checks_m2, checks_m3, checks_m4
 from .registry import CheckResult, Spec, not_implemented
 
 _SPECS: list[Spec] = []
@@ -54,11 +54,11 @@ _spec("S2.4", "A2", "状态存「意图 + 标识 + 结果」三件套，能判�
 
 # A3 上下文工程
 _spec("S3.1", "A3", "压缩是 summary + 未压缩尾部双层，压完仍记得早期事实",
-      "harness verify S3.1", "M4")
+      "harness verify S3.1", "M4", checks_m4.check_s31)
 _spec("S3.2", "A3", "前缀字节稳定（连续两轮前缀 hash 相同），system prompt 无动态内容",
-      "harness verify S3.2", "M4")
+      "harness verify S3.2", "M4", checks_m4.check_s32)
 _spec("S3.3", "A3", "token 报告区分 input / output / cache_read / cache_write，且子集关系成立",
-      "harness verify S3.3", "M4")
+      "harness verify S3.3", "M4", checks_m4.check_s33)
 
 # A4 工具层
 _spec("S4.1", "A4", "工具定义有 token 预算：60 个工具时注入的是 top-k 而不是全量",
@@ -80,7 +80,7 @@ _spec("S5.3", "A5", "refusal / finish_reason=length / 内容过滤三条旁路�
 _spec("S6.1", "A6", "归因账本分层：task → session → turn → call → attempt",
       "harness cost --run <id> --by turn", "M5")
 _spec("S6.2", "A6", "超预算降级而不是硬失败：切小模型继续或明确 BUDGET_EXCEEDED",
-      "harness verify S6.2", "M4")
+      "harness verify S6.2", "M4", checks_m4.check_s62)
 _spec("S6.3", "A6", "token 桶互斥：total = input + output，cache/reasoning 是子集不相加",
       "harness verify S6.3", "M5")
 
@@ -102,9 +102,9 @@ _spec("S8.3", "A8", "脱敏在导出阶段生效，且 hook 失败不丢整批",
 _spec("S9.1", "A9", "并发上限生效且排队时长进指标，不是静默变慢",
       "harness verify S9.1", "M6")
 _spec("S9.2", "A9", "两类 429 分流：带 retry-after 重试，不带则快速失败",
-      "harness verify S9.2", "M4")
+      "harness verify S9.2", "M4", checks_m4.check_s92)
 _spec("S9.3", "A9", "超时按口径拆分：首字节超时不触发整体重放",
-      "harness verify S9.3", "M4")
+      "harness verify S9.3", "M4", checks_m4.check_s93)
 
 # A10 框架对照（岗位要求）
 _spec("S10.1", "A10", "同一套验收在 native 与 langgraph 两个 runtime 上通过率一致",

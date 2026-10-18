@@ -20,7 +20,9 @@
     finish_reason    默认由内容推断，可强制 "length" / "content_filter"
     status           直接返回该 HTTP 状态码（测 429 分流）
     headers          附加响应头（如 {"retry-after": "1"}）
-    delay_s          响应前等待秒数（测超时口径）
+    delay_s          响应前等待秒数（延迟响应头 → 测「首字节超时」）
+    body_delay_s     先回响应头、再延迟发 body（测「总超时」）
+    usage            覆盖 usage 字段（测 token 口径与缓存子集）
 """
 
 from __future__ import annotations
@@ -89,7 +91,7 @@ def _to_openai(step: dict[str, Any], model_id: str) -> dict[str, Any]:
         "choices": [
             {"index": 0, "message": message, "finish_reason": finish_reason}
         ],
-        "usage": {
+        "usage": step.get("usage") or {
             "prompt_tokens": 100,
             "completion_tokens": 20,
             "total_tokens": 120,
@@ -99,11 +101,18 @@ def _to_openai(step: dict[str, Any], model_id: str) -> dict[str, Any]:
 
 class _Handler(BaseHTTPRequestHandler):
     model: ScriptedModel  # 由工厂注入
+    protocol_version = "HTTP/1.1"  # keep-alive：客户端需要同一个 socket 来设 body 超时
 
     def log_message(self, fmt: str, *args: Any) -> None:  # 静音，避免污染测试输出
         return
 
-    def _send(self, status: int, payload: dict[str, Any], headers: dict[str, str] | None = None) -> None:
+    def _send(
+        self,
+        status: int,
+        payload: dict[str, Any],
+        headers: dict[str, str] | None = None,
+        body_delay_s: float = 0.0,
+    ) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode()
         self.send_response(status)
         self.send_header("content-type", "application/json")
@@ -111,6 +120,10 @@ class _Handler(BaseHTTPRequestHandler):
         for key, value in (headers or {}).items():
             self.send_header(key, value)
         self.end_headers()
+        self.wfile.flush()
+        if body_delay_s:
+            # 头已经回了，body 拖后：这正是「首字节正常、总时长超时」的形态
+            time.sleep(body_delay_s)
         self.wfile.write(body)
 
     def do_GET(self) -> None:  # noqa: N802
@@ -155,7 +168,8 @@ class _Handler(BaseHTTPRequestHandler):
             )
             return
 
-        self._send(200, _to_openai(step, self.model.model_id), step.get("headers"))
+        self._send(200, _to_openai(step, self.model.model_id), step.get("headers"),
+                   float(step.get("body_delay_s") or 0.0))
 
 
 class FakeModelServer:
