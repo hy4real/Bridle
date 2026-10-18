@@ -19,6 +19,10 @@ from .policy import ApprovalPolicy, CommandRules, Decision, PolicyEngine, Rule, 
 from .runtime import AgentRuntime, Durability, RunStatus
 from .runner_exec import run_exec
 from .sandbox import SandboxUnavailable, build_backend
+from .tools.base import ToolProtocolError
+from .tools.builtin import crashing_tool, flaky_write_tool, note_read
+from .tools.registry import build_fixture_registry
+from .tools.runner import ToolRunner
 from .runtime.demo import EffectSink, build_demo_task
 from .runtime.types import CancelToken
 from .verify import runner, specs
@@ -27,6 +31,7 @@ from .verify.registry import Status
 EXIT_POLICY_DENIED = 12
 EXIT_SANDBOX_UNAVAILABLE = 13
 EXIT_STRUCTURED_ABORTED = 14
+EXIT_TOOL_PROTOCOL = 21
 
 _EXIT_BY_STATUS = {
     RunStatus.COMPLETED: 0,
@@ -195,6 +200,74 @@ def _cmd_extract(args: argparse.Namespace) -> int:
     return 0 if termination is Termination.OK else EXIT_STRUCTURED_ABORTED
 
 
+def _cmd_tools(args: argparse.Namespace) -> int:
+    registry = build_fixture_registry(args.count)
+    selection = registry.select(args.query, budget_tokens=args.budget)
+    print(json.dumps({
+        "registered": len(registry),
+        "total_definition_tokens": registry.total_definition_tokens(),
+        "budget": args.budget,
+        "selected": selection.count,
+        "selected_tokens": selection.tokens,
+        "skipped": selection.skipped,
+        "names": [tool.name for tool in selection.tools],
+    }, ensure_ascii=False))
+    return 0
+
+
+def _cmd_tool_call(args: argparse.Namespace) -> int:
+    from .runtime.demo import EffectSink
+
+    sink_dir = Path(args.sink_dir) if args.sink_dir else Path("/tmp/agent-harness-tool")
+    if args.name == "note_read":
+        tool = note_read()
+    elif args.name == "explode":
+        tool = crashing_tool()
+    elif args.name == "flaky_write":
+        tool = flaky_write_tool(EffectSink(sink_dir))
+    else:
+        print(json.dumps({"kind": "protocol_error", "error": f"未知工具 {args.name}"}, ensure_ascii=False))
+        return EXIT_TOOL_PROTOCOL
+
+    try:
+        outcome = tool.run(json.loads(args.args))
+    except ToolProtocolError as error:
+        print(json.dumps({"kind": "protocol_error", "tool": tool.name, "error": str(error)},
+                         ensure_ascii=False))
+        return EXIT_TOOL_PROTOCOL
+
+    print(json.dumps({
+        "kind": outcome.kind.value,
+        "tool": outcome.tool,
+        "is_error": outcome.is_error,
+        "message": outcome.to_tool_message(),
+    }, ensure_ascii=False))
+    return 0
+
+
+def _cmd_tool_retry(args: argparse.Namespace) -> int:
+    """复现「超时了但上游已执行」，验证重试不重复写（S4.2）。"""
+    from .runtime.demo import EffectSink
+    from .runtime.ledger import EffectLedger
+
+    sink_dir = Path(args.sink_dir)
+    sink = EffectSink(sink_dir)
+    ledger = EffectLedger(sink_dir)
+    runner = ToolRunner(ledger, retries=2, timeout_s=args.timeout)
+    tool = flaky_write_tool(sink)
+
+    outcome = runner.call(tool, {"target": args.target})
+    rows = ledger.rows()
+    print(json.dumps({
+        "tool": tool.name,
+        "kind": outcome.kind.value,
+        "attempts": rows[0]["attempts"] if rows else 0,
+        "ledger_rows": len(rows),
+        "sink_rows": len(sink.rows()),
+    }, ensure_ascii=False))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="harness", description="通用 Agent Harness")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -219,6 +292,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.set_defaults(func=_cmd_run)
 
     for name, func, help_text in (
+        ("tools", _cmd_tools, "工具定义预算：60 个工具时只注入 top-k"),
+        ("tool-call", _cmd_tool_call, "调用一个内置工具（区分业务失败与协议失败）"),
+        ("tool-retry", _cmd_tool_retry, "超时重试：验证不重复写"),
         ("sandbox-probe", _cmd_sandbox_probe, "检查沙箱后端是否可用（fail-closed 自检）"),
         ("policy-check", _cmd_policy_check, "只做策略判定，不执行"),
         ("exec", _cmd_exec, "在会话工作区里执行一条命令（过策略 + 过沙箱）"),
@@ -246,6 +322,18 @@ def build_parser() -> argparse.ArgumentParser:
                                     choices=[m.value for m in SandboxMode])
             sub_parser.add_argument("--cwd", default=None)
             sub_parser.add_argument("--allow-unsandboxed", action="store_true")
+        if name == "tools":
+            sub_parser.add_argument("--count", type=int, default=60)
+            sub_parser.add_argument("--query", default="")
+            sub_parser.add_argument("--budget", type=int, default=400)
+        if name == "tool-call":
+            sub_parser.add_argument("--name", required=True)
+            sub_parser.add_argument("--args", default="{}")
+            sub_parser.add_argument("--sink-dir", default=None)
+        if name == "tool-retry":
+            sub_parser.add_argument("--sink-dir", required=True)
+            sub_parser.add_argument("--target", default="notes/a.md")
+            sub_parser.add_argument("--timeout", type=float, default=0.1)
         if name == "extract":
             sub_parser.add_argument("--fake-script", required=True)
             sub_parser.add_argument("--sink-dir", required=True)

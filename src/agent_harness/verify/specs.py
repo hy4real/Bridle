@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from . import checks_m1, checks_m2
+from . import checks_m1, checks_m2, checks_m3
 from .registry import CheckResult, Spec, not_implemented
 
 _SPECS: list[Spec] = []
@@ -62,11 +62,11 @@ _spec("S3.3", "A3", "token 报告区分 input / output / cache_read / cache_writ
 
 # A4 工具层
 _spec("S4.1", "A4", "工具定义有 token 预算：60 个工具时注入的是 top-k 而不是全量",
-      "harness verify S4.1", "M3")
+      "harness verify S4.1", "M3", checks_m3.check_s41)
 _spec("S4.2", "A4", "工具超时重试不重复写：账本仍只有一条",
-      "harness verify S4.2", "M3")
+      "harness verify S4.2", "M3", checks_m3.check_s42)
 _spec("S4.3", "A4", "业务失败（is_error）与协议失败（异常）走不同路径且日志可区分",
-      "harness verify S4.3", "M3")
+      "harness verify S4.3", "M3", checks_m3.check_s43)
 
 # A5 可靠性与护栏
 _spec("S5.1", "A5", "沙箱不可用时 fail-closed（拒绝启动），不是裸跑",

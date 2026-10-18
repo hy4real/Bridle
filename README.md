@@ -10,12 +10,12 @@
 ```bash
 uv sync --dev
 uv run harness verify --list      # 30 条可验收规格
-uv run harness verify --all       # 逐条跑：9 通过 / 0 失败 / 21 未实现
+uv run harness verify --all       # 逐条跑：12 通过 / 0 失败 / 18 未实现
 uv run harness verify S2.1        # 只跑一条
 ./scripts/ci.sh                   # 单测 + 规格数 + 基线断言
 ```
 
-**当前状态：M2 已交付（9 条通过），其余 21 条按里程碑逐条变绿。**
+**当前状态：M3 已交付（12 条通过），其余 18 条按里程碑逐条变绿。**
 通过数记在 `BASELINE` 里，CI 会比对——**想加通过数必须同时改 BASELINE**，
 没人能悄悄让测试变绿。
 
@@ -66,6 +66,27 @@ uv run harness extract --fake-script refusal.json --sink-dir /tmp/sink   # 三�
 **一个必须记住的坑**：Seatbelt 的路径要先 `realpath`。`/var/folders/...` 实际是
 `/private/var/folders/...`，不做 realpath 时 deny 规则**不报错也不生效**——
 测试 `test_seatbelt_realpath_is_required_to_match` 专门守这件事。
+
+## M3 做了什么：工具层
+
+```bash
+uv run harness tools --count 60 --query "读取文件 read file" --budget 300
+# → 注册 60、全量 3820 token、只选 4 个（260 token）、跳过 56
+
+uv run harness tool-call --name note_read --args '{"path":"missing"}'   # 业务失败 → rc 0
+uv run harness tool-call --name explode   --args '{"path":"x"}'         # 协议失败 → rc 21
+uv run harness tool-retry --sink-dir /tmp/s --timeout 0.1               # 超时重试不重复写
+```
+
+| 决定 | 证据 |
+| --- | --- |
+| 工具定义吃 token，所以要有预算 | 60 个工具全量 3,820 token；预算 300 时只装 4 个且全是同类工具（S4.1） |
+| 「未收到响应」≠「未执行」 | 第一次调用超时但下游已写；重试后 `attempts=2`、账本 1 条、下游 1 条（S4.2） |
+| 失败分两类，路径不同 | 业务失败回灌 `is_error=true` 给模型（rc 0）；工具崩溃/参数缺失 → `protocol_error`（rc 21）（S4.3） |
+| 空输出显式化、长输出截断 | `render()` 返回「命令成功执行，没有任何输出」或 `{truncated, head, total_chars}` |
+
+**注意**：token 估算是 `CJK 1 字 ≈ 1 token、ASCII 4 字符 ≈ 1 token` 的粗估，
+只用于预算，不用于计费——计费仍以模型返回的 `usage` 为准。这条差异写在代码注释里。
 
 ## 验收长什么样
 
