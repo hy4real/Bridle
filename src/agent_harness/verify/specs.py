@@ -1,0 +1,127 @@
+"""30 条规格的登记表。
+
+这张表是 `specs/a1-a10-acceptance-specs.md` 的代码镜像。两处必须同步：
+改一处必须改另一处，否则 `harness verify --list` 与文档对不上。
+
+M0 阶段：全部 check 返回 `not_implemented`，这是**基线**，不是缺陷。
+每完成一个里程碑，把对应的 check 换成真断言，状态列从「未实现」变成「通过/失败」。
+"""
+
+from __future__ import annotations
+
+from .registry import CheckResult, Spec, not_implemented
+
+_SPECS: list[Spec] = []
+
+
+def _spec(
+    sid: str, area: str, title: str, command: str, milestone: str
+) -> None:
+    _SPECS.append(
+        Spec(
+            id=sid,
+            area=area,
+            title=title,
+            command=command,
+            milestone=milestone,
+            check=lambda sid=sid, milestone=milestone: not_implemented(
+                f"{milestone} 未开始：{sid} 的断言函数尚未实现"
+            ),
+        )
+    )
+
+
+# A1 多租户与隔离
+_spec("S1.1", "A1", "隔离单元是 session，不是同一个进程里的一个变量",
+      "harness verify S1.1", "M2")
+_spec("S1.2", "A1", "沙箱 ≠ 权限边界：越权拦截在策略层，返回 PERMISSION_DENIED 而非 ENOENT",
+      "harness verify S1.2", "M2")
+_spec("S1.3", "A1", "配额硬上限用「预留 + 结算」，两个并发请求不能同时穿透余额检查",
+      "harness verify S1.3", "M5")
+
+# A2 长任务与状态
+_spec("S2.1", "A2", "kill -9 后从 checkpoint 恢复，且副作用账本只有一条",
+      "harness verify S2.1", "M1")
+_spec("S2.2", "A2", "恢复会重跑节点，节点内副作用靠幂等键收敛",
+      "harness verify S2.2", "M1")
+_spec("S2.3", "A2", "取消是协作式传播：在途工具收到 cancel，账本记 cancelled",
+      "harness verify S2.3", "M1")
+_spec("S2.4", "A2", "状态存「意图 + 标识 + 结果」三件套，能判定是否已执行",
+      "harness verify S2.4", "M1")
+
+# A3 上下文工程
+_spec("S3.1", "A3", "压缩是 summary + 未压缩尾部双层，压完仍记得早期事实",
+      "harness verify S3.1", "M4")
+_spec("S3.2", "A3", "前缀字节稳定（连续两轮前缀 hash 相同），system prompt 无动态内容",
+      "harness verify S3.2", "M4")
+_spec("S3.3", "A3", "token 报告区分 input / output / cache_read / cache_write，且子集关系成立",
+      "harness verify S3.3", "M4")
+
+# A4 工具层
+_spec("S4.1", "A4", "工具定义有 token 预算：60 个工具时注入的是 top-k 而不是全量",
+      "harness verify S4.1", "M3")
+_spec("S4.2", "A4", "工具超时重试不重复写：账本仍只有一条",
+      "harness verify S4.2", "M3")
+_spec("S4.3", "A4", "业务失败（is_error）与协议失败（异常）走不同路径且日志可区分",
+      "harness verify S4.3", "M3")
+
+# A5 可靠性与护栏
+_spec("S5.1", "A5", "沙箱不可用时 fail-closed（拒绝启动），不是裸跑",
+      "harness verify S5.1", "M2")
+_spec("S5.2", "A5", "deny 优先于 allow，allow 无法为 deny 开例外",
+      "harness verify S5.2", "M2")
+_spec("S5.3", "A5", "refusal / finish_reason=length / 内容过滤三条旁路都不写入下游",
+      "harness verify S5.3", "M2")
+
+# A6 成本
+_spec("S6.1", "A6", "归因账本分层：task → session → turn → call → attempt",
+      "harness cost --run <id> --by turn", "M5")
+_spec("S6.2", "A6", "超预算降级而不是硬失败：切小模型继续或明确 BUDGET_EXCEEDED",
+      "harness verify S6.2", "M4")
+_spec("S6.3", "A6", "token 桶互斥：total = input + output，cache/reasoning 是子集不相加",
+      "harness verify S6.3", "M5")
+
+# A7 评测
+_spec("S7.1", "A7", "工程回归集可复现：固定用例跑两遍通过率一致",
+      "harness eval --suite core", "M6")
+_spec("S7.2", "A7", "失败样本按失败模式分类，而不是只有「没过」",
+      "harness eval --suite core --report failures", "M6")
+
+# A8 可观测
+_spec("S8.1", "A8", "span 名与属性对齐 OTel GenAI 语义约定",
+      "harness trace --run <id> --format otlp", "M5")
+_spec("S8.2", "A8", "高基数（session_id / trace_id）不进 metric 标签",
+      "harness verify S8.2", "M5")
+_spec("S8.3", "A8", "脱敏在导出阶段生效，且 hook 失败不丢整批",
+      "harness verify S8.3", "M5")
+
+# A9 并发与性能
+_spec("S9.1", "A9", "并发上限生效且排队时长进指标，不是静默变慢",
+      "harness verify S9.1", "M6")
+_spec("S9.2", "A9", "两类 429 分流：带 retry-after 重试，不带则快速失败",
+      "harness verify S9.2", "M4")
+_spec("S9.3", "A9", "超时按口径拆分：首字节超时不触发整体重放",
+      "harness verify S9.3", "M4")
+
+# A10 框架对照（岗位要求）
+_spec("S10.1", "A10", "同一套验收在 native 与 langgraph 两个 runtime 上通过率一致",
+      "harness verify --all --runtime langgraph", "M6")
+_spec("S10.2", "A10", "checkpoint 可导出为 langgraph 三表结构，并能反向导入继续跑",
+      "harness checkpoint export --format langgraph", "M6")
+_spec("S10.3", "A10", "「为什么不用现成框架」有代码答案：真 backend + 对照文档",
+      "python -c \"import agent_harness.runtime.langgraph_backend\"", "M6")
+
+SPECS: tuple[Spec, ...] = tuple(_SPECS)
+
+
+def by_id(sid: str) -> Spec:
+    for spec in SPECS:
+        if spec.id == sid:
+            return spec
+    raise KeyError(f"没有这条规格：{sid}")
+
+
+def run(spec: Spec) -> CheckResult:
+    if spec.check is None:  # 防御：登记时漏了断言函数
+        return not_implemented(f"{spec.id} 没有绑定断言函数")
+    return spec.check()
