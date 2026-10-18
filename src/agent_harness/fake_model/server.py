@@ -106,6 +106,10 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:  # 静音，避免污染测试输出
         return
 
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        """客户端主动断开（例如超时测试）不是错误，不该往 stderr 打栈。"""
+        return
+
     def _send(
         self,
         status: int,
