@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ..effects import Replay, scoped_key
+from ..effects import Replay, VerifyResult, scoped_key
 from .types import Step, StepContext, Task
 
 DEMO_EFFECT_STEP = 1  # apply_effect 在 demo 任务里的下标
@@ -81,10 +81,14 @@ class EffectSink:
             conn.row_factory = sqlite3.Row
             return [dict(r) for r in conn.execute("SELECT * FROM effects_log ORDER BY key")]
 
-    def append_rows(self) -> list[dict[str, Any]]:
+    def append_rows(self, key: str | None = None) -> list[dict[str, Any]]:
+        """给了 key 就是反查：下游有没有这个键的记录。"""
+        query, params = "SELECT * FROM append_log", ()
+        if key is not None:
+            query, params = query + " WHERE key = ?", (key,)
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            return [dict(r) for r in conn.execute("SELECT * FROM append_log ORDER BY id")]
+            return [dict(r) for r in conn.execute(query + " ORDER BY id", params)]
 
 
 HOLD_POINTS = ("before-write", "after-write")
@@ -111,6 +115,7 @@ def build_demo_task(
     effect_key: str = "demo-effect-1",
     replay: Replay = Replay.SAFE,
     hold: str | None = None,
+    verify: bool = False,
 ) -> Task:
     """`replay` 决定第二步怎么写下游，也决定它在账本里怎么声明：
 
@@ -118,6 +123,7 @@ def build_demo_task(
     unsafe  追加到 `append_log`，重跑一次就多一行
 
     `hold` 只给验收用：让进程停在写下游之前或之后，等着被杀。
+    `verify` 给不可重放的写配一个反查：按键去 `append_log` 里找。
     """
     replay = Replay(replay)
     if hold is not None and hold not in HOLD_POINTS:
@@ -133,6 +139,12 @@ def build_demo_task(
         key = ctx.effect_key(effect_key)
 
         # 慢下游：延迟放在 action 里，取消才会落在"意图已落、结果未落"的窗口内（S2.3）
+        def check_downstream() -> VerifyResult:
+            found = sink.append_rows(key)
+            if found:
+                return VerifyResult("applied", {"key": key, "id": found[0]["id"], "verified": True})
+            return VerifyResult("not_applied")
+
         def action() -> dict[str, Any]:
             ctx.sleep_or_cancel(ctx.tool_delay)
             if hold == "before-write":
@@ -151,6 +163,7 @@ def build_demo_task(
             },
             action=action,
             replay=replay,
+            verify=check_downstream if (verify and unsafe) else None,
         )
         ctx.state["effect"] = {
             "key": result.key,

@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 
 class Replay(str, Enum):
@@ -21,6 +23,29 @@ class Replay(str, Enum):
 
     SAFE = "safe"
     UNSAFE = "unsafe"
+
+
+VERIFY_VERDICTS = ("applied", "not_applied", "unknown")
+
+
+@dataclass(frozen=True)
+class VerifyResult:
+    """反查下游得到的结论。
+
+    applied      下游确实有这次操作的记录。账本据此落 completed，不再执行。
+    not_applied  下游没查到。**不等于没执行**：请求可能还在路上，或下游有延迟。
+    unknown      查不了，或查到的东西无法判断。
+
+    后两种账本一律按结果未知处理，不会因此重放。反查只能证明「已执行」。
+    `result` 是 applied 时可用的结果，拿不到可以留空。
+    """
+
+    verdict: str
+    result: Any = None
+
+    def __post_init__(self) -> None:
+        if self.verdict not in VERIFY_VERDICTS:
+            raise ValueError(f"verdict 只能是 {VERIFY_VERDICTS}，实际 {self.verdict!r}")
 
 
 def stricter(first: Replay, second: Replay) -> Replay:

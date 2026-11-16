@@ -98,7 +98,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     previous = signal.signal(signal.SIGINT, _on_sigint)
     try:
         task = build_demo_task(state_dir, effect_key=args.effect_key, replay=replay,
-                               hold=args.hold)
+                               hold=args.hold, verify=args.effect_verify)
         if args.runtime == "langgraph":
             from .runtime.langgraph_backend import LangGraphRuntime
 
@@ -450,6 +450,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--effect-replay", default="safe", choices=[r.value for r in Replay],
                      help="demo 副作用的可重放性：safe 按键 upsert；unsafe 追加（重跑就多一行）。"
                           "恢复时要传和第一次相同的值，否则意图不同，报幂等键冲突")
+    run.add_argument("--effect-verify", action="store_true",
+                     help="给不可重放的 demo 副作用配反查：恢复时按键查下游，查到已执行就不重跑；"
+                          "查不到仍按结果未知处理")
     run.add_argument("--hold", default=None, choices=list(HOLD_POINTS),
                      help="验收用：停在写下游之前/之后等着被 SIGKILL（30 秒后自行退出）")
     run.add_argument("--crash-after-step", type=int, default=None,

@@ -146,3 +146,49 @@ def test_resolved_applied_effect_yields_a_synthetic_outcome(tmp_path) -> None:
     assert outcome.kind.value == "ok" and outcome.tool == "flaky_append"
     assert "人工确认" in outcome.payload["note"]
     assert len(sink.append_rows()) == 1  # 没有再执行
+
+
+def test_tool_verify_turns_a_timed_out_unsafe_call_into_a_result_on_the_next_call(tmp_path) -> None:
+    """工具自带反查：第一次超时 → unknown 之前先留 pending；这里模拟进程重启后的第二次调用。"""
+    import dataclasses
+
+    from bridle.effects import EffectOutcomeUnknown, Replay, VerifyResult
+    from bridle.tools.builtin import flaky_append_tool
+    from bridle.tools.runner import ToolRunner
+
+    sink, ledger = _runner_fixture(tmp_path)
+
+    def verify(args: dict, key: str) -> VerifyResult:
+        found = sink.append_rows(f"append:{args['target']}")
+        return VerifyResult("applied", {"ok": True, "appended": found[0]["id"]}) if found \
+            else VerifyResult("not_applied")
+
+    tool = dataclasses.replace(flaky_append_tool(sink, slow=0.3), verify=verify)
+    key = "r1:0:flaky_append:a"
+
+    # 造出「意图已写、下游已写、结果未写」：直接在账本里留一条 pending，下游补一行
+    class _Died(BaseException):
+        pass
+
+    def die() -> dict:
+        sink.append("append:a", {"target": "a"})
+        raise _Died()
+
+    with pytest.raises(_Died):
+        ledger.attempt(key, {"tool": "flaky_append", "args": {"target": "a"}}, die,
+                       replay=Replay.UNSAFE)
+
+    outcome = ToolRunner(ledger, run_id="r1", retries=2, timeout_s=0.05).call(tool, {"target": "a"})
+
+    assert outcome.kind.value == "ok" and outcome.payload == {"ok": True, "appended": 1}
+    assert len(sink.append_rows()) == 1  # 没有再执行
+    assert ledger.rows()[0]["status"] == "completed"
+
+    # 没写过的情况：反查不到 → 未知，不执行
+    other = "r1:0:flaky_append:b"
+    with pytest.raises(_Died):
+        ledger.attempt(other, {"tool": "flaky_append", "args": {"target": "b"}},
+                       lambda: (_ for _ in ()).throw(_Died()), replay=Replay.UNSAFE)
+    with pytest.raises(EffectOutcomeUnknown):
+        ToolRunner(ledger, run_id="r1", retries=2, timeout_s=0.05).call(tool, {"target": "b"})
+    assert sink.append_rows("append:b") == []

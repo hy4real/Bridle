@@ -264,6 +264,60 @@ def check_s27() -> CheckResult:
         )
 
 
+# --- S2.9 ---------------------------------------------------------------
+def check_s29() -> CheckResult:
+    """声明了反查的不可重放副作用：恢复时去下游查。查到了就不重跑；查不到**不等于没执行**。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        verify = (*_UNSAFE, "--effect-verify")
+
+        # (a) 写完之后被杀：反查能在下游找到这条记录
+        wrote = Path(tmp) / "wrote"
+        killed = _kill_when(["run", "--state-dir", str(wrote), *_UNSAFE, "--hold", "after-write"],
+                            _written(wrote, "append_log"))
+        if killed != _KILLED:
+            return failed(f"(a) 子进程没有在窗口里被 SIGKILL：返回码 {killed}")
+        resumed_a = _resume(wrote, *verify)
+        row_a = _effects(wrote)[0]
+        outcomes_a = _attempt_outcomes(wrote)
+        appended_a = _count(wrote / "sink.sqlite", "append_log")
+        if resumed_a.returncode != 0 or row_a["status"] != "completed":
+            return failed(f"(a) 反查到已执行后应直接完成：退出码 {resumed_a.returncode}，账本 {row_a['status']}",
+                          resumed_a.stderr[-400:])
+        if row_a["executions"] != 1 or appended_a != 1:
+            return failed(f"(a) 不应再执行：executions={row_a['executions']}，下游 {appended_a} 行")
+        if "verified_applied" not in outcomes_a:
+            return failed(f"(a) attempt 记录里没有 verified_applied：{outcomes_a}")
+        if row_a["resolved_by"]:
+            return failed(f"(a) 这条不是人解除的，resolved_by 应为空：{row_a['resolved_by']}")
+
+        # (b) 还没写就被杀：反查找不到。找不到不能推出「没执行」——请求可能还在路上
+        unwritten = Path(tmp) / "unwritten"
+        killed = _kill_when(["run", "--state-dir", str(unwritten), *_UNSAFE, "--hold", "before-write"],
+                            _intent_recorded(unwritten))
+        if killed != _KILLED:
+            return failed(f"(b) 子进程没有在窗口里被 SIGKILL：返回码 {killed}")
+        resumed_b = _resume(unwritten, *verify)
+        row_b = _effects(unwritten)[0]
+        outcomes_b = _attempt_outcomes(unwritten)
+        appended_b = _count(unwritten / "sink.sqlite", "append_log")
+        if resumed_b.returncode != EXIT_OUTCOME_UNKNOWN or row_b["status"] != "unknown":
+            return failed(f"(b) 反查不到时应停在未知：退出码 {resumed_b.returncode}，账本 {row_b['status']}")
+        if appended_b != 0 or row_b["executions"] != 1:
+            return failed(f"(b) 反查不到时被自动重放了：下游 {appended_b} 行，executions={row_b['executions']}")
+        if "verify_not_applied" not in outcomes_b:
+            return failed(f"(b) attempt 记录里没有 verify_not_applied：{outcomes_b}")
+
+        return passed(
+            f"(a) 写后被杀 → 带反查恢复：退出码 {resumed_a.returncode}，账本 {row_a['status']}，"
+            f"executions={row_a['executions']}，下游仍 {appended_a} 行",
+            f"(a) attempt 记录 {outcomes_a}（没有人工解除）",
+            f"(b) 写前被杀 → 带反查恢复：退出码 {resumed_b.returncode}，账本 {row_b['status']}，"
+            f"下游 {appended_b} 行（没有自动重放）",
+            f"(b) attempt 记录 {outcomes_b}",
+            "结论：反查只能证明「已执行」；查不到一律按未知处理，仍要人来解除",
+        )
+
+
 # --- S2.8 ---------------------------------------------------------------
 def check_s28() -> CheckResult:
     with tempfile.TemporaryDirectory() as tmp:

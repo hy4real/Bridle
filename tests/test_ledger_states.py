@@ -21,6 +21,7 @@ from bridle.effects import (
     IdempotencyKeyConflict,
     Replay,
     StateVersionMismatch,
+    VerifyResult,
 )
 from bridle.runtime import EffectLedger
 from bridle.runtime.types import Cancelled
@@ -393,3 +394,92 @@ def test_open_existing_only_does_not_create_a_ledger(tmp_path: Path) -> None:
 
     EffectLedger(tmp_path)  # 建好之后可以只读打开
     assert EffectLedger(tmp_path, create=False).rows() == []
+
+
+# --- 反查（M7.7）-----------------------------------------------------------
+def test_verify_applied_completes_without_running(tmp_path: Path) -> None:
+    ledger = EffectLedger(tmp_path)
+    _leave_pending(ledger, "k", Replay.UNSAFE)
+    calls, action = _counter()
+
+    result = ledger.attempt("k", INTENT, action, replay=Replay.UNSAFE,
+                            verify=lambda: VerifyResult("applied", {"id": 7}))
+
+    row = _row(ledger, "k")
+    assert calls == []
+    assert result.verified is True and result.deduplicated is True and result.value == {"id": 7}
+    assert row["status"] == "completed" and row["executions"] == 1 and row["resolved_by"] is None
+    assert _outcomes(ledger) == ["started", "verified_applied"]
+    # 之后就是普通的去重
+    assert ledger.attempt("k", INTENT, action, replay=Replay.UNSAFE).value == {"id": 7}
+
+
+@pytest.mark.parametrize("verdict, outcome", [
+    ("not_applied", "verify_not_applied"),  # 查不到不等于没执行
+    ("unknown", "verify_unknown"),
+])
+def test_verify_without_positive_evidence_is_unknown_and_never_replays(
+    tmp_path: Path, verdict: str, outcome: str
+) -> None:
+    ledger = EffectLedger(tmp_path)
+    _leave_pending(ledger, "k", Replay.UNSAFE)
+    calls, action = _counter()
+
+    with pytest.raises(EffectOutcomeUnknown):
+        ledger.attempt("k", INTENT, action, replay=Replay.UNSAFE,
+                       verify=lambda: VerifyResult(verdict))
+
+    assert calls == []
+    assert _row(ledger, "k")["status"] == "unknown"
+    assert _outcomes(ledger)[-1] == outcome
+
+
+def test_verify_that_raises_or_returns_garbage_is_unknown(tmp_path: Path) -> None:
+    ledger = EffectLedger(tmp_path)
+    calls, action = _counter()
+
+    def broken() -> VerifyResult:
+        raise ConnectionError("下游查询接口也挂了")
+
+    _leave_pending(ledger, "raises", Replay.UNSAFE)
+    with pytest.raises(EffectOutcomeUnknown):
+        ledger.attempt("raises", INTENT, action, replay=Replay.UNSAFE, verify=broken)
+    _leave_pending(ledger, "garbage", Replay.UNSAFE)
+    with pytest.raises(EffectOutcomeUnknown):
+        ledger.attempt("garbage", INTENT, action, replay=Replay.UNSAFE,
+                       verify=lambda: "applied")  # type: ignore[arg-type,return-value]
+
+    assert calls == []
+    assert _row(ledger, "raises")["status"] == "unknown"
+    assert _row(ledger, "garbage")["status"] == "unknown"
+    assert "verify_error" in _outcomes(ledger) and "verify_unknown" in _outcomes(ledger)
+
+
+def test_verify_is_only_consulted_for_pending_unsafe(tmp_path: Path) -> None:
+    ledger = EffectLedger(tmp_path)
+    asked: list[str] = []
+
+    def verify() -> VerifyResult:
+        asked.append("asked")
+        return VerifyResult("applied")
+
+    # 新键、已完成：不问
+    ledger.attempt("fresh", INTENT, lambda: {}, replay=Replay.UNSAFE, verify=verify)
+    ledger.attempt("fresh", INTENT, lambda: {}, replay=Replay.UNSAFE, verify=verify)
+    # pending 但可重放：直接重放，不问
+    _leave_pending(ledger, "safe", Replay.SAFE)
+    ledger.attempt("safe", INTENT, lambda: {}, replay=Replay.SAFE, verify=verify)
+    # 已经是 unknown：只有 resolve 能带走，反查说 applied 也不行
+    _leave_pending(ledger, "stuck", Replay.UNSAFE)
+    with pytest.raises(EffectOutcomeUnknown):
+        ledger.attempt("stuck", INTENT, lambda: {}, replay=Replay.UNSAFE)
+    with pytest.raises(EffectOutcomeUnknown):
+        ledger.attempt("stuck", INTENT, lambda: {}, replay=Replay.UNSAFE, verify=verify)
+
+    assert asked == []
+    assert _row(ledger, "stuck")["status"] == "unknown"
+
+
+def test_verify_result_rejects_unknown_verdicts() -> None:
+    with pytest.raises(ValueError):
+        VerifyResult("probably")

@@ -38,6 +38,7 @@ from ..effects import (
     IdempotencyKeyConflict,
     Replay,
     StateVersionMismatch,
+    VerifyResult,
     stricter,
 )
 from .types import Cancelled
@@ -82,13 +83,14 @@ class ApplyResult:
     attempts: int
     executions: int = 0
     resolved: bool = False  # 这一行被人工 resolve 过；resolve applied 且没给结果时 value 是 None
+    verified: bool = False  # 这次没有执行：反查下游确认已执行过
 
 
 @dataclass(frozen=True)
 class _Claim:
     """领取事务的结论。先提交，再由调用方决定执行还是抛异常。"""
 
-    kind: str  # run | dedup | unknown | conflict
+    kind: str  # run | dedup | unknown | conflict | verify
     attempt_id: str = ""
     replay: Replay = Replay.UNSAFE
     attempts: int = 0
@@ -178,8 +180,12 @@ class EffectLedger:
         action: Callable[[], Any],
         *,
         replay: Replay,
+        verify: Callable[[], VerifyResult] | None = None,
     ) -> ApplyResult:
         """执行一次带幂等键的副作用。`replay` 必填：调用方必须说清这个操作能不能重跑。
+
+        `verify` 是可选的反查：只在「pending + unsafe」时被调用。查到已执行 → 落 completed、
+        不再执行；查不到、查不了、反查自己抛错 → 一律 unknown。它不会让任何操作被重放。
 
         领取时该键的状态 → 结果：
         - 无记录 → 写 pending，执行
@@ -187,14 +193,14 @@ class EffectLedger:
         - completed → 返回上次结果，不执行
         - cancelled → 执行
         - pending + safe → 重放
-        - pending + unsafe → 置 unknown，`EffectOutcomeUnknown`
-        - unknown → `EffectOutcomeUnknown`
+        - pending + unsafe → 有 `verify` 就先反查，否则置 unknown，`EffectOutcomeUnknown`
+        - unknown → `EffectOutcomeUnknown`（有没有 `verify` 都一样，只有 `resolve` 能带走）
         """
         replay = Replay(replay)
         intent_json = json.dumps(intent, ensure_ascii=False, sort_keys=True)
         intent_hash = hashlib.sha256(intent_json.encode("utf-8")).hexdigest()
 
-        claim = self._claim(key, intent_json, intent_hash, replay)
+        claim = self._claim(key, intent_json, intent_hash, replay, can_verify=verify is not None)
         # 领取事务已经提交，下面才允许抛异常
         if claim.kind == "conflict":
             raise IdempotencyKeyConflict(key)
@@ -205,6 +211,9 @@ class EffectLedger:
                 key=key, value=claim.value, deduplicated=True,
                 attempts=claim.attempts, executions=claim.executions, resolved=claim.resolved,
             )
+        if claim.kind == "verify":
+            assert verify is not None
+            return self._verify(key, claim, verify)
         return self._execute(key, claim, action)
 
     def resolve(
@@ -251,7 +260,8 @@ class EffectLedger:
             )
 
     # --- 领取 ---
-    def _claim(self, key: str, intent_json: str, intent_hash: str, replay: Replay) -> _Claim:
+    def _claim(self, key: str, intent_json: str, intent_hash: str, replay: Replay,
+               *, can_verify: bool = False) -> _Claim:
         attempt_id = _new_id()
         now = time.time()
 
@@ -309,6 +319,15 @@ class EffectLedger:
                 audit(conn, "blocked_unknown")
                 return _Claim("unknown", reason="结果未知且尚未解除，拒绝再次执行")
 
+            if status == "pending" and effective is Replay.UNSAFE and can_verify:
+                # 先不下结论：出了事务去问下游。行保持 pending——此刻它本来就是「不知道」
+                conn.execute(
+                    "UPDATE effects SET attempts = ?, replay = ?, updated_at = ? WHERE key = ?",
+                    (attempts, effective.value, now, key),
+                )
+                return _Claim("verify", row["attempt_id"], effective,
+                              attempts=attempts, executions=executions)
+
             if status == "pending" and effective is Replay.UNSAFE:
                 # 意图在、结果不在、又不能重跑。attempt_id 保持不变：
                 # 第一次执行如果其实还活着，它稍后仍能凭自己的 attempt_id 把这一行落成 completed。
@@ -336,6 +355,49 @@ class EffectLedger:
             )
             start(conn)
             return _Claim("run", attempt_id, effective, attempts=attempts, executions=executions)
+
+    # --- 反查 ---
+    def _verify(self, key: str, claim: _Claim, verify: Callable[[], VerifyResult]) -> ApplyResult:
+        """在事务之外问下游。只有 applied 能让这一行离开「不知道」；其余都落 unknown。"""
+        try:
+            outcome = verify()
+            verdict = outcome.verdict if isinstance(outcome, VerifyResult) else "unknown"
+            result = outcome.result if isinstance(outcome, VerifyResult) else None
+        except Exception as error:  # noqa: BLE001 —— 反查自己坏了，也是「不知道」
+            verdict, result = "error", None
+            detail = f"反查抛出 {type(error).__name__}"
+        else:
+            detail = {"not_applied": "反查没有在下游找到这次操作（不等于没执行）",
+                      "unknown": "反查无法判断"}.get(verdict, "")
+
+        now = time.time()
+        applied = False
+        with self._tx() as conn:
+            if verdict == "applied":
+                cursor = conn.execute(
+                    """UPDATE effects SET status = 'completed', result_json = ?, updated_at = ?
+                       WHERE key = ? AND attempt_id = ? AND status = 'pending'""",
+                    (json.dumps(result, ensure_ascii=False), now, key, claim.attempt_id),
+                )
+                applied = cursor.rowcount == 1
+                if not applied:
+                    detail = "反查期间这一行被别的执行改动了"
+            else:
+                conn.execute(
+                    """UPDATE effects SET status = 'unknown', updated_at = ?
+                       WHERE key = ? AND attempt_id = ? AND status = 'pending'""",
+                    (now, key, claim.attempt_id),
+                )
+            conn.execute(
+                """INSERT INTO effect_attempts (attempt_id, key, started_at, finished_at, outcome)
+                   VALUES (?,?,?,?,?)""",
+                (_new_id(), key, now, now,
+                 "verified_applied" if applied else f"verify_{'raced' if verdict == 'applied' else verdict}"),
+            )
+        if applied:
+            return ApplyResult(key=key, value=result, deduplicated=True, attempts=claim.attempts,
+                               executions=claim.executions, verified=True)
+        raise EffectOutcomeUnknown(key, f"意图已落盘、结果未落盘，且操作不可重放；{detail}")
 
     # --- 执行与收尾 ---
     def _execute(self, key: str, claim: _Claim, action: Callable[[], Any]) -> ApplyResult:

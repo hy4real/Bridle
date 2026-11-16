@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
 
-from ..effects import Replay
+from ..effects import Replay, VerifyResult
 
 
 class OutcomeKind(str, Enum):
@@ -63,6 +63,8 @@ class Tool:
     side_effect: bool = False
     idempotency_key: Callable[[dict[str, Any]], str] | None = None
     replay: Replay | None = None         # 重跑一次会怎样；不声明时见 replay_mode()
+    # 可选的反查：(args, effect_key) → VerifyResult。applied 时 result 是工具的返回 payload。
+    verify: Callable[[dict[str, Any], str], VerifyResult] | None = None
     max_output_chars: int = 2000
     tags: tuple[str, ...] = field(default_factory=tuple)
 
