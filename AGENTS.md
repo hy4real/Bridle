@@ -19,7 +19,7 @@
 ## 目录
 
 ```
-src/bridle/cli.py           命令入口（verify 已实现，run/eval/cost/trace 待接）
+src/bridle/cli.py           命令入口（verify / run / eval / limits / tools / tool-call / tool-retry / sandbox-probe / policy-check / exec / extract）
 src/bridle/verify/          规格登记表 + 执行器 + 输出
 src/bridle/fake_model/      脚本化假模型服务（OpenAI 兼容）
 tests/                             框架自测 + 假模型行为契约
