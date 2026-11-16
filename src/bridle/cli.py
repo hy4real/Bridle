@@ -5,6 +5,7 @@
 M0: verify
 M1: run（含 resume / durability / 崩溃注入 / 取消）
 M7: effect list / effect resolve（查看与解除结果未知的副作用）
+M8: agent（模型循环：model → tool → model，跑在 native runtime 上）
 
 退出码：0 完成；3 中断；4 副作用结果未知（run 停在 blocked）；6 run id 已存在；
 7 run 被另一个进程持有；8 幂等键冲突；12 策略拒绝；13 沙箱不可用；14 结构化输出中止；
@@ -150,6 +151,94 @@ def _cmd_run(args: argparse.Namespace) -> int:
                         if hasattr(runtime, "checkpointer") else ["langgraph"]),
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return _EXIT_BY_STATUS.get(report.status, 1)
+
+
+def _agent_tools(state_dir: Path, names: list[str] | None):
+    """agent 能用的工具。写下游的两个都落到 state_dir 下的 sink：一个按键 upsert，一个追加。"""
+    from .tools.registry import ToolRegistry
+
+    sink = EffectSink(state_dir)
+    available = {
+        "note_read": note_read(),
+        "flaky_write": flaky_write_tool(sink, slow_first=0.0),   # 可重放
+        "flaky_append": flaky_append_tool(sink, slow=0.0),        # 不可重放（未声明）
+    }
+    unknown = sorted(set(names or []) - set(available))
+    if unknown:
+        raise ValueError(f"没有这些工具：{unknown}；可用 {sorted(available)}")
+    registry = ToolRegistry()
+    for name, tool in available.items():
+        if names is None or name in names:
+            registry.register(tool)
+    return registry
+
+
+def _cmd_agent(args: argparse.Namespace) -> int:
+    from .agent.task import AgentConfig, build_agent_task
+    from .model.gateway import ModelGateway
+
+    state_dir = Path(args.state_dir)
+    rules = CommandRules()
+    for index, pattern in enumerate(args.deny_tool or [], start=1):
+        rules.add(Rule(f"deny-tool-{index}", Decision.FORBID, pattern))
+    for index, pattern in enumerate(args.ask_tool or [], start=1):
+        rules.add(Rule(f"ask-tool-{index}", Decision.PROMPT, pattern))
+    rules.add(Rule("allow-tools", Decision.ALLOW, "tool:*"))  # deny 永远先判，allow 开不了例外
+    try:
+        registry = _agent_tools(state_dir, args.tools.split(",") if args.tools else None)
+    except ValueError as error:
+        print(json.dumps({"code": "BAD_TOOLS", "error": str(error)}, ensure_ascii=False))
+        return 2
+    config = AgentConfig(
+        gateway=ModelGateway(args.base_url, model=args.model, retries=1,
+                             first_byte_timeout=args.model_timeout, total_timeout=args.model_timeout),
+        registry=registry,
+        policy=PolicyEngine(rules=rules, approval=ApprovalPolicy(args.approval)),
+        max_steps=args.max_steps,
+        tool_timeout_s=args.tool_timeout,
+    )
+
+    cancel = CancelToken()
+    previous = signal.signal(signal.SIGINT, lambda signum, frame: cancel.cancel())
+    try:
+        runtime = AgentRuntime(build_agent_task(args.prompt, config), state_dir,
+                               run_id=args.run_id, cancel=cancel)
+        report = runtime.run(resume=args.resume)
+    except RunAlreadyExists as error:
+        print(json.dumps({"code": "RUN_ALREADY_EXISTS", "run_id": error.run_id,
+                          "error": str(error)}, ensure_ascii=False))
+        return EXIT_RUN_EXISTS
+    except RunLocked as error:
+        print(json.dumps({"code": "RUN_LOCKED", "run_id": error.run_id,
+                          "error": str(error)}, ensure_ascii=False))
+        return EXIT_RUN_LOCKED
+    except IdempotencyKeyConflict as error:
+        print(json.dumps({"code": "IDEMPOTENCY_KEY_CONFLICT", "key": error.key,
+                          "error": str(error)}, ensure_ascii=False))
+        return EXIT_KEY_CONFLICT
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+    latest = runtime.checkpointer.latest(args.run_id)
+    state = latest.state if latest is not None else {}
+    sink = EffectSink(state_dir)
+    print(json.dumps({
+        "run_id": report.run_id,
+        "status": report.status.value,
+        "steps_run": report.steps_run,
+        "replayed_steps": report.replayed_steps,
+        "error": report.error,
+        "blocked_on": report.blocked_on,
+        "final": state.get("final"),
+        "steps_done": state.get("steps_done", []),
+        "model_steps": state.get("model_steps", 0),
+        "messages": len(state.get("messages", [])),
+        "ledger": [{"key": r["key"], "status": r["status"], "executions": r["executions"]}
+                   for r in runtime.ledger.rows()],
+        "sink_rows": len(sink.rows()),
+        "append_rows": len(sink.append_rows()),
+    }, ensure_ascii=False, indent=2))
     return _EXIT_BY_STATUS.get(report.status, 1)
 
 
@@ -521,6 +610,23 @@ def build_parser() -> argparse.ArgumentParser:
             sub_parser.add_argument("--sink-dir", required=True)
             sub_parser.add_argument("--key", default="extract-1")
         sub_parser.set_defaults(func=func)
+
+    agent = sub.add_parser("agent", help="跑一次模型循环（M8）：model → tool → model")
+    agent.add_argument("--state-dir", required=True)
+    agent.add_argument("--base-url", required=True, help="OpenAI 兼容的模型服务地址（验收用脚本化假模型）")
+    agent.add_argument("--prompt", required=True,
+                       help="用户的任务。恢复时要传同一个：第一次模型调用的请求由它构成")
+    agent.add_argument("--run-id", default="run-1")
+    agent.add_argument("--resume", action="store_true")
+    agent.add_argument("--model", default="deepseek-v4-pro")
+    agent.add_argument("--max-steps", type=int, default=8, help="模型步与工具步合计的上限")
+    agent.add_argument("--tools", default=None, help="逗号分隔的工具名；默认全部")
+    agent.add_argument("--deny-tool", action="append", default=[], help="如 tool:flaky_write*")
+    agent.add_argument("--ask-tool", action="append", default=[], help="命中时需要审批")
+    agent.add_argument("--approval", default="on-request", choices=[a.value for a in ApprovalPolicy])
+    agent.add_argument("--tool-timeout", type=float, default=5.0)
+    agent.add_argument("--model-timeout", type=float, default=30.0)
+    agent.set_defaults(func=_cmd_agent)
 
     effect = sub.add_parser("effect", help="查看与解除副作用账本里的记录")
     effect_sub = effect.add_subparsers(dest="effect_command", required=True)

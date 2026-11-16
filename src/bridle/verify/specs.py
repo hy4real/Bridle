@@ -12,7 +12,16 @@ from __future__ import annotations
 
 from typing import Callable
 
-from . import checks_m1, checks_m2, checks_m3, checks_m4, checks_m5, checks_m6, checks_m7
+from . import (
+    checks_m1,
+    checks_m2,
+    checks_m3,
+    checks_m4,
+    checks_m5,
+    checks_m6,
+    checks_m7,
+    checks_m8,
+)
 from .registry import CheckResult, Spec, not_implemented
 
 _SPECS: list[Spec] = []
@@ -129,7 +138,7 @@ _spec("S10.3", "A10", "「为什么不用现成框架」有代码答案：真 ba
 
 # A11 模型循环（M8）：runtime 里跑的是 model → tool → model，恢复时不重问模型已给出的决定
 _spec("S11.1", "A11", "两轮闭环：模型要求调用工具，工具结果回灌，模型给出最终回答",
-      "harness verify S11.1", "M8")
+      "harness verify S11.1", "M8", checks_m8.check_s111)
 _spec("S11.2", "A11", "工具步执行中被真 SIGKILL：恢复后不重问模型，副作用收敛",
       "harness verify S11.2", "M8")
 _spec("S11.3", "A11", "循环里不可重放的工具结果未知：恢复停在 blocked，解除后才继续",
