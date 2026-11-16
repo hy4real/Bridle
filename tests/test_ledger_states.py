@@ -447,6 +447,7 @@ def test_verify_that_raises_or_returns_garbage_is_unknown(tmp_path: Path) -> Non
     _leave_pending(ledger, "garbage", Replay.UNSAFE)
     with pytest.raises(EffectOutcomeUnknown):
         ledger.attempt("garbage", INTENT, action, replay=Replay.UNSAFE,
+                       # 原因：测的就是反查返回了不是 VerifyResult 的东西
                        verify=lambda: "applied")  # type: ignore[arg-type,return-value]
 
     assert calls == []

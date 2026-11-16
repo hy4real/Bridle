@@ -10,12 +10,12 @@
 ```bash
 uv sync --dev
 uv run harness verify --list      # 36 条可验收规格
-uv run harness verify --all       # 逐条跑；各状态条数与 BASELINE 一致
+uv run harness verify --all       # 逐条跑：36 通过 / 0 失败 / 0 未实现
 uv run harness verify S2.1        # 只跑一条
 ./scripts/ci.sh                   # 单测 + 规格数 + 基线断言
 ```
 
-**当前状态：M6 已交付，其 30 条规格全部通过；M7（副作用判据）进行中，6 条新规格逐条实现，当前通过数见 `BASELINE`。**
+**当前状态：M7 已交付，36 条规格全部通过。**
 通过数记在 `BASELINE` 里，CI 会比对——**想加通过数必须同时改 BASELINE**，
 没人能悄悄让测试变绿。
 
@@ -32,6 +32,9 @@ uv run harness run --state-dir /tmp/demo2 --resume               # 重跑那一�
 # 3) 协作式取消：SIGINT 后账本记 cancelled，下游没被写
 uv run harness run --state-dir /tmp/demo3 --tool-delay 2   # 另开一个终端 kill -INT
 ```
+
+第 2 条的退出码 137 来自 `os._exit` 注入点，不是真实信号，而且退出时账本已经记了 `completed`。
+真 `SIGKILL` 打在「意图已写、结果未写」之间的验收在 M7。
 
 三条设计决定：
 
@@ -155,12 +158,46 @@ uv run harness verify S10.2                          # checkpoint 往返 langgra
 SQLite saver 是**两表**（`checkpoints` + `writes`），只有 Postgres saver 才是三表
 （多 `checkpoint_blobs`）。验收按实测写，并把差异写进对照文档。
 
+## M7 做了什么：副作用判据
+
+M1 的账本对「意图已写、结果未写」只有一种处理：重放。下游按键 upsert 时这是对的；
+下游是追加、扣减、发消息时，重放一次就多一份结果。M7 让每个带副作用的操作声明
+`replay`（`safe` 或 `unsafe`，不声明按 `unsafe`），账本据此决定重放还是停下。
+
+```bash
+# 不可重放的写：写完下游后停住，另一边发真 SIGKILL
+uv run harness run --state-dir /tmp/b1 --effect-replay unsafe --hold after-write &
+sleep 1.5; pkill -KILL -f "state-dir /tmp/b1"
+
+uv run harness run --state-dir /tmp/b1 --effect-replay unsafe --resume; echo $?   # 4：blocked，不重放
+uv run harness effect list --state-dir /tmp/b1 --status unknown
+uv run harness effect resolve --state-dir /tmp/b1 --key run-1:1:demo-effect-1 --outcome applied
+uv run harness run --state-dir /tmp/b1 --effect-replay unsafe --resume; echo $?   # 0：下游仍是 1 行
+
+# 不可重放的工具超时：不重试，0.1 秒超时就是 0.1 秒
+uv run harness tool-retry --sink-dir /tmp/b2 --tool flaky_append --timeout 0.1; echo $?   # 4
+```
+
+| 决定 | 证据 |
+| --- | --- |
+| 账本四态：`pending` / `completed` / `cancelled` / `unknown` | `unknown` 表示结果未知且不可重放，只有 `effect resolve` 能带走（S2.6、S2.7） |
+| 可重放的照旧重放 | 真 SIGKILL 后恢复：执行 2 次，下游仍 1 行（S2.5） |
+| 不可重放的不重放，run 停在 `blocked` | 连续两次恢复都是退出码 4，下游 `append_log` 始终 1 行（S2.6） |
+| 反查只能证明「已执行」 | 查到就不重跑；查不到仍按未知处理，因为请求可能还在路上（S2.9） |
+| 幂等键带 run 与 step 作用域，外加新 run 守卫 | 两个 run 各写各的；同一个 run id 不带 `--resume` 重跑被拒（S2.8） |
+| 同键不同意图报冲突 | 不返回上一个意图的结果（S2.8） |
+| 超时真正限时，不可重放的工具超时后不重试 | 超时设 0.1s，调用耗时 0.104s，账本 `unknown`，下游 1 行（S4.4） |
+
+边界：持久性只到「已提交的意图能扛进程被杀」，不承诺断电。LangGraph backend 不跟进这套语义，
+`--runtime langgraph` 配 `--effect-replay unsafe` 会直接报错。恢复时 `--effect-replay` 要和第一次一致，
+否则意图不同，报幂等键冲突（退出码 8）。设计与已知缺口见设计仓的 `design/decisions.md`。
+
 ## 收口状态
 
 | 项 | 数字 |
 | --- | --- |
-| 规格 | 36 条：M1–M6 的 30 条通过且带证据，M7 的 6 条逐条实现中（见 `BASELINE`） |
-| 单测 | 以 `uv run pytest` 的输出为准（M6 收口时 67 个） |
+| 规格 | 36 / 36 通过，每条带证据 |
+| 单测 | 136 个 |
 | 回归集 | 20 例，pass_rate 1.0，跑两遍一致 |
 | runtime | native（默认）+ langgraph（可选） |
 
@@ -186,10 +223,16 @@ uv run python scripts/smoke_real_model.py
 每条规格的验收是一条命令，输出带证据行：
 
 ```
-[TODO] S2.1 (M1) kill -9 后从 checkpoint 恢复，且副作用账本只有一条
-        命令：harness verify S2.1
-        状态：未实现 —— M1 未开始：S2.1 的断言函数尚未实现
+[PASS] S2.6 (M7) 不可重放副作用结果未知时不自动重放：恢复停在 blocked，账本记 unknown
+        命令：harness verify S2.6
+        状态：通过 —— 断言全部成立
+        证据：子进程被真 SIGKILL：returncode=-9，此时下游 append_log 已有 1 行
+        证据：连续两次 --resume：退出码 [4, 4]，状态 ['blocked', 'blocked']，卡在 run-1:1:demo-effect-1
+        证据：账本 status=unknown、executions=1、replay=unsafe
+        证据：下游 append_log=1 行（没有被重放）
 ```
+
+新规格先以「未实现」登记（输出 `[TODO]`），断言写好并看到它失败之后才写实现。
 
 设计约束：**PASSED 必须带证据**（代码里会抛异常），所以不存在「默默通过」。
 
@@ -212,7 +255,7 @@ uv run python scripts/smoke_real_model.py
 | M4 | 上下文双层、前缀稳定、模型网关 | S3.1–S3.3、S6.2、S9.2、S9.3 |
 | M5 | 观测、成本账本、配额预留结算 | S1.3、S6.1、S6.3、S8.1–S8.3 |
 | M6 | 回归集、langgraph backend、框架对照 | S7.1、S7.2、S9.1、S10.1–S10.3 |
-| M7 | 副作用判据：`replay` 声明、`unknown` 状态、键作用域、真 SIGKILL 验收（进行中） | S2.5–S2.9、S4.4 |
+| M7 | 副作用判据：`replay` 声明、`unknown` 状态、键作用域、真 SIGKILL 验收 | S2.5–S2.9、S4.4 |
 
 ## 明确不做
 

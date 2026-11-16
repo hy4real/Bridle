@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import threading
-from typing import Any
+from typing import Any, Callable
 
 from ..effects import VerifyResult, scoped_key, validate_run_id
 from ..runtime.ledger import EffectLedger
@@ -56,10 +56,16 @@ class ToolRunner:
             raise ToolProtocolError(
                 f"{tool.name}: 超时 {self.timeout_s}s（上游可能已经执行）") from error
 
-    def _verifier(self, tool: Tool, args: dict[str, Any], key: str):
+    def _verifier(
+        self,
+        tool: Tool,
+        check: Callable[[dict[str, Any], str], VerifyResult],
+        args: dict[str, Any],
+        key: str,
+    ) -> Callable[[], VerifyResult]:
         """把工具的反查包成账本要的形状：applied 时带回来的 payload 存成工具结果的格式。"""
         def verify() -> VerifyResult:
-            outcome = tool.verify(args, key)  # type: ignore[misc]
+            outcome = check(args, key)
             if outcome.verdict == "applied" and outcome.result is not None:
                 return VerifyResult("applied", self._as_payload(ToolOutcome(
                     kind=OutcomeKind.OK, payload=tool.render(outcome.result), tool=tool.name)))
@@ -100,7 +106,8 @@ class ToolRunner:
                     f"{tool.name} 带副作用：必须给 ToolRunner 提供 ledger 与 run_id 才能调用")
             key_fn = tool.idempotency_key or (lambda a: f"{tool.name}:{sorted(a.items())}")
             key = scoped_key(self.run_id, step_index, key_fn(args))
-            verify = self._verifier(tool, args, key) if tool.verify is not None else None
+            verify = (self._verifier(tool, tool.verify, args, key)
+                      if tool.verify is not None else None)
             last_error: Exception | None = None
             for _ in range(self.retries + 1):
                 try:

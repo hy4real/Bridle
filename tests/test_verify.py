@@ -2,7 +2,7 @@
 
 这些测试保护的是**框架本身**，不是业务逻辑：
 - 规格数必须与文档一致（36），否则文档与代码会漂移；
-- 已交付里程碑（M1–M6）的 30 条必须全部通过，新登记的规格先是「未实现」，
+- 已交付里程碑（M1–M7）的 36 条必须全部通过，新登记的规格先是「未实现」，
   各状态条数与 BASELINE 逐字一致，否则有人会偷偷把断言写成恒真；
 - PASSED 必须带证据，否则「通过」就等于没跑。
 """
@@ -17,7 +17,7 @@ from bridle.verify import runner, specs
 from bridle.verify.registry import CheckResult, Status, failed, not_implemented, passed
 
 
-_DELIVERED_MILESTONES = {"M1", "M2", "M3", "M4", "M5", "M6"}
+_DELIVERED_MILESTONES = {"M1", "M2", "M3", "M4", "M5", "M6", "M7"}
 _BASELINE = Path(__file__).resolve().parents[1] / "BASELINE"
 
 
@@ -46,15 +46,15 @@ def test_m1_specs_are_wired_to_real_checks() -> None:
 
 
 def test_delivered_specs_pass_and_baseline_matches() -> None:
-    """已交付的 30 条必须全部通过且带证据；任何规格不许「失败」；条数与 BASELINE 一致。
+    """已交付里程碑的规格必须全部通过且带证据；任何规格不许「失败」；条数与 BASELINE 一致。
 
-    M7 起新规格先登记为「未实现」再逐条变绿（M0 的做法），所以这里不再要求
-    「全部通过」，改为「已交付的不许退、未交付的不许假装」。旧 30 条的要求没有放松。
+    新规格先登记为「未实现」再逐条变绿（M0 的做法），所以这里要求的是
+    「已交付的不许退、未交付的不许假装」。里程碑交付时把它加进 `_DELIVERED_MILESTONES`。
     """
     outcomes = runner.run_all()
     assert len(outcomes) == 36
     delivered = [o for o in outcomes if o.spec.milestone in _DELIVERED_MILESTONES]
-    assert len(delivered) == 30
+    assert len(delivered) == 36
     for outcome in delivered:
         assert outcome.result.status is Status.PASSED, (
             outcome.spec.id, outcome.result.status, outcome.result.reason)

@@ -1,7 +1,10 @@
 """M1 的回归断言（S2.1–S2.4）。
 
-全部走**子进程**，因为要测的正是"进程被真的干掉之后会怎样"——
-同进程里 try/except 模拟不出 kill -9。
+全部走**子进程**，因为要测的是进程退出之后会怎样，同进程里 try/except 模拟不出来。
+
+S2.1 / S2.2 的退出方式是 `--crash-after-step`：步骤执行完、checkpoint 写盘前 `os._exit(137)`。
+这是注入点，不是真实信号；退出时账本已经记了 `completed`，所以恢复走的是去重，不是重放。
+真 SIGKILL 打在「意图已写、结果未写」之间的验收在 `checks_m7.py`（S2.5–S2.7、S2.9）。
 """
 
 from __future__ import annotations
@@ -111,7 +114,7 @@ def check_s22() -> CheckResult:
         return passed(
             f"重跑的步骤：{replayed}",
             f"attempt 序列：{outcomes}",
-            f"账本 attempts={dedup}（执行 ≥2 次），下游仍只有 1 条",
+            f"账本 attempts={dedup}：这一步进了账本 2 次，第 2 次是去重返回，下游实际只写了 1 次",
             "结论：恢复按「整节点重跑」实现，副作用靠幂等键收敛",
         )
 

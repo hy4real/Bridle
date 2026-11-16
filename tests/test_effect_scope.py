@@ -28,15 +28,15 @@ def test_scoped_key_format_and_no_cross_scope_collision() -> None:
 @pytest.mark.parametrize("bad", ["a:1", "", "has space", "斜/杠", None])
 def test_run_id_charset_is_enforced(bad: object) -> None:
     with pytest.raises(ValueError):
-        validate_run_id(bad)  # type: ignore[arg-type]
+        validate_run_id(bad)  # type: ignore[arg-type]  # 原因：这条测的就是传错类型时被拒
     with pytest.raises(ValueError):
-        scoped_key(bad, 0, "k")  # type: ignore[arg-type]
+        scoped_key(bad, 0, "k")  # type: ignore[arg-type]  # 原因：同上
 
 
 @pytest.mark.parametrize("step", [-1, True, "1", 1.0])
 def test_scoped_key_rejects_non_index_steps(step: object) -> None:
     with pytest.raises(ValueError):
-        scoped_key("run-1", step, "k")  # type: ignore[arg-type]
+        scoped_key("run-1", step, "k")  # type: ignore[arg-type]  # 原因：测的就是非下标值被拒
 
 
 def test_scoped_key_rejects_empty_business_key() -> None:

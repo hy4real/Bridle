@@ -5,7 +5,7 @@
 
 新规格先登记为 `not_implemented`（M0 起的做法）：这是**基线**，不是缺陷。
 每完成一条，把对应的 check 换成真断言，状态列从「未实现」变成「通过/失败」，
-同时改 `BASELINE`。M1–M6 的 30 条已全部通过；M7 的 6 条见 A2 与 A4。
+同时改 `BASELINE`。M1–M7 的 36 条已全部通过。
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ _spec("S1.3", "A1", "配额硬上限用「预留 + 结算」，两个并发请�
       "harness verify S1.3", "M5", checks_m5.check_s13)
 
 # A2 长任务与状态
-_spec("S2.1", "A2", "kill -9 后从 checkpoint 恢复，且副作用账本只有一条",
+_spec("S2.1", "A2", "注入点退出（模拟 kill -9）后从 checkpoint 恢复，且副作用账本只有一条",
       "harness verify S2.1", "M1", checks_m1.check_s21)
 _spec("S2.2", "A2", "恢复会重跑节点，节点内副作用靠幂等键收敛",
       "harness verify S2.2", "M1", checks_m1.check_s22)
