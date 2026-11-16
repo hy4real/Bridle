@@ -96,7 +96,7 @@ _HOLD_LIMIT_S = 30.0
 EXIT_HOLD_EXPIRED = 98
 
 
-def _hold_until_killed() -> None:
+def hold_until_killed() -> None:
     """验收用的停顿点：停在这里等着被 SIGKILL，永不返回。
 
     故意**不可取消**（不走 `sleep_or_cancel`）：要复现的是「进程在这个位置被杀」，
@@ -148,10 +148,10 @@ def build_demo_task(
         def action() -> dict[str, Any]:
             ctx.sleep_or_cancel(ctx.tool_delay)
             if hold == "before-write":
-                _hold_until_killed()
+                hold_until_killed()
             written = (sink.append if unsafe else sink.upsert)(key, ctx.state["plan"])
             if hold == "after-write":
-                _hold_until_killed()
+                hold_until_killed()
             return written
 
         result = ctx.ledger.attempt(

@@ -154,8 +154,14 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return _EXIT_BY_STATUS.get(report.status, 1)
 
 
-def _agent_tools(state_dir: Path, names: list[str] | None):
-    """agent 能用的工具。写下游的两个都落到 state_dir 下的 sink：一个按键 upsert，一个追加。"""
+def _agent_tools(state_dir: Path, names: list[str] | None, *, hold_after_write: str | None = None):
+    """agent 能用的工具。写下游的两个都落到 state_dir 下的 sink：一个按键 upsert，一个追加。
+
+    `hold_after_write` 只给验收用：那个工具写完下游之后停住，等着被 SIGKILL。
+    """
+    import dataclasses
+
+    from .runtime.demo import hold_until_killed
     from .tools.registry import ToolRegistry
 
     sink = EffectSink(state_dir)
@@ -164,9 +170,18 @@ def _agent_tools(state_dir: Path, names: list[str] | None):
         "flaky_write": flaky_write_tool(sink, slow_first=0.0),   # 可重放
         "flaky_append": flaky_append_tool(sink, slow=0.0),        # 不可重放（未声明）
     }
-    unknown = sorted(set(names or []) - set(available))
+    unknown = sorted((set(names or []) | {hold_after_write} - {None}) - set(available))
     if unknown:
         raise ValueError(f"没有这些工具：{unknown}；可用 {sorted(available)}")
+    if hold_after_write is not None:
+        original = available[hold_after_write]
+
+        def held(**kwargs):
+            result = original.handler(**kwargs)  # 下游已经写了
+            hold_until_killed()                   # 结果还没回到账本
+            return result
+
+        available[hold_after_write] = dataclasses.replace(original, handler=held)
     registry = ToolRegistry()
     for name, tool in available.items():
         if names is None or name in names:
@@ -186,7 +201,8 @@ def _cmd_agent(args: argparse.Namespace) -> int:
         rules.add(Rule(f"ask-tool-{index}", Decision.PROMPT, pattern))
     rules.add(Rule("allow-tools", Decision.ALLOW, "tool:*"))  # deny 永远先判，allow 开不了例外
     try:
-        registry = _agent_tools(state_dir, args.tools.split(",") if args.tools else None)
+        registry = _agent_tools(state_dir, args.tools.split(",") if args.tools else None,
+                                hold_after_write=args.hold_after_write)
     except ValueError as error:
         print(json.dumps({"code": "BAD_TOOLS", "error": str(error)}, ensure_ascii=False))
         return 2
@@ -626,6 +642,8 @@ def build_parser() -> argparse.ArgumentParser:
     agent.add_argument("--approval", default="on-request", choices=[a.value for a in ApprovalPolicy])
     agent.add_argument("--tool-timeout", type=float, default=5.0)
     agent.add_argument("--model-timeout", type=float, default=30.0)
+    agent.add_argument("--hold-after-write", default=None, metavar="TOOL",
+                       help="验收用：这个工具写完下游后停住，等着被 SIGKILL（30 秒后自行退出）")
     agent.set_defaults(func=_cmd_agent)
 
     effect = sub.add_parser("effect", help="查看与解除副作用账本里的记录")
