@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ..effects import Replay
 from .types import Step, StepContext, Task
 
 
@@ -66,6 +67,7 @@ def build_demo_task(state_dir: Path, *, effect_key: str = "demo-effect-1") -> Ta
             effect_key,
             intent={"op": "upsert", "table": "effects_log", "payload": ctx.state["plan"]},
             action=action,
+            replay=Replay.SAFE,  # 下游是按键 upsert
         )
         ctx.state["effect"] = {
             "key": result.key,

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from bridle.effects import Replay
 from bridle.runtime import Checkpointer, Durability, EffectLedger
 from bridle.runtime.checkpointer import _SCHEMA
 from bridle.runtime.types import Checkpoint
@@ -57,8 +58,8 @@ def test_ledger_dedups_completed_effect(tmp_path: Path) -> None:
         calls.append(1)
         return {"written": len(calls)}
 
-    first = ledger.attempt("k1", {"op": "write"}, action)
-    second = ledger.attempt("k1", {"op": "write"}, action)
+    first = ledger.attempt("k1", {"op": "write"}, action, replay=Replay.SAFE)
+    second = ledger.attempt("k1", {"op": "write"}, action, replay=Replay.SAFE)
 
     assert first.deduplicated is False and second.deduplicated is True
     assert len(calls) == 1  # 第二次没有再调下游
@@ -75,7 +76,7 @@ def test_ledger_records_intent_before_action(tmp_path: Path) -> None:
         assert rows and rows[0]["status"] == "pending"
         return {"ok": True}
 
-    ledger.attempt("k2", {"op": "write", "payload": "x"}, action)
+    ledger.attempt("k2", {"op": "write", "payload": "x"}, action, replay=Replay.SAFE)
     rows = ledger.rows()
     assert rows[0]["status"] == "completed"
     assert rows[0]["intent_json"]
@@ -91,7 +92,7 @@ def test_ledger_marks_cancelled(tmp_path: Path) -> None:
         raise Cancelled("stop")
 
     with pytest.raises(Cancelled):
-        ledger.attempt("k3", {"op": "write"}, action)
+        ledger.attempt("k3", {"op": "write"}, action, replay=Replay.SAFE)
 
     rows = ledger.rows()
     assert rows[0]["status"] == "cancelled"

@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
 
+from ..effects import Replay
+
 
 class OutcomeKind(str, Enum):
     OK = "ok"
@@ -60,8 +62,15 @@ class Tool:
     handler: Callable[..., dict[str, Any]]
     side_effect: bool = False
     idempotency_key: Callable[[dict[str, Any]], str] | None = None
+    replay: Replay | None = None         # 重跑一次会怎样；不声明时见 replay_mode()
     max_output_chars: int = 2000
     tags: tuple[str, ...] = field(default_factory=tuple)
+
+    def replay_mode(self) -> Replay:
+        """没声明时的默认值是 fail-closed：有副作用就当不可重放，没有副作用才可重放。"""
+        if self.replay is not None:
+            return self.replay
+        return Replay.UNSAFE if self.side_effect else Replay.SAFE
 
     # --- 定义（会被计入 token 预算）---
     def definition(self) -> dict[str, Any]:

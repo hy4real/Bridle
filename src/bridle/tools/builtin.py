@@ -10,6 +10,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from ..effects import Replay
 from .base import Tool
 
 
@@ -72,5 +73,6 @@ def flaky_write_tool(sink: Any, *, slow_first: float = 0.5) -> Tool:
         handler=handler,
         side_effect=True,
         idempotency_key=lambda args: f"flaky_write:{args['target']}",
+        replay=Replay.SAFE,  # 下游按键 upsert：重跑、并发重跑都只留一条
         tags=("write",),
     )
