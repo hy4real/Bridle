@@ -144,9 +144,9 @@ _spec("S11.2", "A11", "工具步执行中被真 SIGKILL：恢复后不重问模�
 _spec("S11.3", "A11", "循环里不可重放的工具结果未知：恢复停在 blocked，解除后才继续",
       "harness verify S11.3", "M8", checks_m8.check_s113)
 _spec("S11.4", "A11", "策略拒绝的工具调用不执行，拒绝原因作为工具结果回灌给模型",
-      "harness verify S11.4", "M8")
+      "harness verify S11.4", "M8", checks_m8.check_s114)
 _spec("S11.5", "A11", "步数上限：模型一直要工具时，到上限判失败，不无限循环",
-      "harness verify S11.5", "M8")
+      "harness verify S11.5", "M8", checks_m8.check_s115)
 
 SPECS: tuple[Spec, ...] = tuple(_SPECS)
 
