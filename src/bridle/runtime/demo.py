@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 from pathlib import Path
@@ -86,8 +87,43 @@ class EffectSink:
             return [dict(r) for r in conn.execute("SELECT * FROM append_log ORDER BY id")]
 
 
-def build_demo_task(state_dir: Path, *, effect_key: str = "demo-effect-1") -> Task:
+HOLD_POINTS = ("before-write", "after-write")
+_HOLD_LIMIT_S = 30.0
+EXIT_HOLD_EXPIRED = 98
+
+
+def _hold_until_killed() -> None:
+    """验收用的停顿点：停在这里等着被 SIGKILL，永不返回。
+
+    故意**不可取消**（不走 `sleep_or_cancel`）：要复现的是「进程在这个位置被杀」，
+    不是「在这个位置被协作式取消」。两道保险防止变成孤儿进程：
+    超过 30 秒自己退出；父进程没了（被 init 收养）也自己退出。
+    """
+    deadline = time.monotonic() + _HOLD_LIMIT_S
+    while time.monotonic() < deadline and os.getppid() != 1:
+        time.sleep(0.05)
+    os._exit(EXIT_HOLD_EXPIRED)
+
+
+def build_demo_task(
+    state_dir: Path,
+    *,
+    effect_key: str = "demo-effect-1",
+    replay: Replay = Replay.SAFE,
+    hold: str | None = None,
+) -> Task:
+    """`replay` 决定第二步怎么写下游，也决定它在账本里怎么声明：
+
+    safe    按键 upsert 到 `effects_log`（默认，M1 起的行为）
+    unsafe  追加到 `append_log`，重跑一次就多一行
+
+    `hold` 只给验收用：让进程停在写下游之前或之后，等着被杀。
+    """
+    replay = Replay(replay)
+    if hold is not None and hold not in HOLD_POINTS:
+        raise ValueError(f"hold 只能是 {HOLD_POINTS}，实际 {hold!r}")
     sink = EffectSink(state_dir)
+    unsafe = replay is Replay.UNSAFE
 
     def plan(ctx: StepContext) -> None:
         ctx.state["plan"] = {"effect_key": effect_key}
@@ -99,13 +135,22 @@ def build_demo_task(state_dir: Path, *, effect_key: str = "demo-effect-1") -> Ta
         # 慢下游：延迟放在 action 里，取消才会落在"意图已落、结果未落"的窗口内（S2.3）
         def action() -> dict[str, Any]:
             ctx.sleep_or_cancel(ctx.tool_delay)
-            return sink.upsert(key, ctx.state["plan"])
+            if hold == "before-write":
+                _hold_until_killed()
+            written = (sink.append if unsafe else sink.upsert)(key, ctx.state["plan"])
+            if hold == "after-write":
+                _hold_until_killed()
+            return written
 
         result = ctx.ledger.attempt(
             key,
-            intent={"op": "upsert", "table": "effects_log", "payload": ctx.state["plan"]},
+            intent={
+                "op": "append" if unsafe else "upsert",
+                "table": "append_log" if unsafe else "effects_log",
+                "payload": ctx.state["plan"],
+            },
             action=action,
-            replay=Replay.SAFE,  # 下游是按键 upsert
+            replay=replay,
         )
         ctx.state["effect"] = {
             "key": result.key,

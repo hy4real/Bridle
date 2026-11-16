@@ -23,6 +23,7 @@ from pathlib import Path
 from .effects import (
     EffectOutcomeUnknown,
     IdempotencyKeyConflict,
+    Replay,
     RunAlreadyExists,
     RunLocked,
     run_id_of,
@@ -39,7 +40,7 @@ from .tools.runner import ToolRunner
 from .concurrency import BoundedRunner
 from .eval import run_suite
 from .eval.suite import summarize
-from .runtime.demo import EffectSink, build_demo_task, demo_effect_key
+from .runtime.demo import HOLD_POINTS, EffectSink, build_demo_task, demo_effect_key
 from .runtime.types import CancelToken
 from .verify import runner, specs
 from .verify.registry import Status
@@ -80,6 +81,13 @@ def _cmd_verify(args: argparse.Namespace) -> int:
 
 def _cmd_run(args: argparse.Namespace) -> int:
     state_dir = Path(args.state_dir)
+    replay = Replay(args.effect_replay)
+    if args.runtime == "langgraph" and (replay is Replay.UNSAFE or args.hold):
+        # langgraph backend 不跟进 M7 的语义（blocked / unknown）。悄悄降级比报错危险。
+        print(json.dumps({"code": "UNSUPPORTED_ON_LANGGRAPH",
+                          "error": "--effect-replay unsafe 与 --hold 只支持 native runtime"},
+                         ensure_ascii=False))
+        return 2
     cancel = CancelToken()
 
     def _on_sigint(signum: int, frame: object) -> None:
@@ -89,7 +97,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     previous = signal.signal(signal.SIGINT, _on_sigint)
     try:
-        task = build_demo_task(state_dir, effect_key=args.effect_key)
+        task = build_demo_task(state_dir, effect_key=args.effect_key, replay=replay,
+                               hold=args.hold)
         if args.runtime == "langgraph":
             from .runtime.langgraph_backend import LangGraphRuntime
 
@@ -134,6 +143,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 demo_effect_key(args.run_id, args.effect_key)),
         },
         "sink_rows": len(EffectSink(state_dir).rows()),
+        "append_rows": len(EffectSink(state_dir).append_rows()),
         "runtime": getattr(runtime, "name", "native"),
         "checkpoints": ([c.kind for c in runtime.checkpointer.history(args.run_id)]
                         if hasattr(runtime, "checkpointer") else ["langgraph"]),
@@ -437,6 +447,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--runtime", default="native", choices=["native", "langgraph"])
     run.add_argument("--tool-delay", type=float, default=0.0)
     run.add_argument("--effect-key", default="demo-effect-1")
+    run.add_argument("--effect-replay", default="safe", choices=[r.value for r in Replay],
+                     help="demo 副作用的可重放性：safe 按键 upsert；unsafe 追加（重跑就多一行）。"
+                          "恢复时要传和第一次相同的值，否则意图不同，报幂等键冲突")
+    run.add_argument("--hold", default=None, choices=list(HOLD_POINTS),
+                     help="验收用：停在写下游之前/之后等着被 SIGKILL（30 秒后自行退出）")
     run.add_argument("--crash-after-step", type=int, default=None,
                      help="在第 N 步执行完、checkpoint 写盘前直接 os._exit(137)（复现最危险的窗口）")
     run.set_defaults(func=_cmd_run)

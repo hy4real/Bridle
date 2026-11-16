@@ -129,9 +129,14 @@ def check_s23() -> CheckResult:
             text=True,
             env={**os.environ, "PYTHONPATH": str(_REPO_ROOT / "src")},
         )
-        time.sleep(0.6)  # 让它进入慢下游
-        process.send_signal(signal.SIGINT)
-        stdout, stderr = process.communicate(timeout=30)
+        try:
+            time.sleep(0.6)  # 让它进入慢下游
+            process.send_signal(signal.SIGINT)
+            stdout, stderr = process.communicate(timeout=30)
+        finally:
+            if process.poll() is None:  # communicate 超时或中途出错：不留孤儿进程
+                process.kill()
+                process.wait(timeout=10)
 
         rows, attempts, sink_rows = _state(state_dir) if (state_dir / "ledger.sqlite").exists() else ([], [], 0)
         if process.returncode != 130:

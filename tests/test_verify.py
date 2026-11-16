@@ -85,3 +85,19 @@ def test_helpers_and_run_one() -> None:
 def test_unknown_spec_raises() -> None:
     with pytest.raises(KeyError):
         specs.by_id("S99.9")
+
+
+def test_a_raising_check_is_reported_as_failed_not_a_crash(monkeypatch: pytest.MonkeyPatch) -> None:
+    from bridle.verify.registry import Spec
+
+    def explode() -> CheckResult:
+        raise TimeoutError("子进程没回来")
+
+    broken = Spec(id="S0.0", area="A0", title="会抛异常的断言", command="harness verify S0.0",
+                  milestone="M0", check=explode)
+    monkeypatch.setattr(specs, "SPECS", (broken, specs.by_id("S5.2")))
+
+    outcomes = runner.run_all()
+
+    assert [o.result.status for o in outcomes] == [Status.FAILED, Status.PASSED]
+    assert "TimeoutError" in outcomes[0].result.reason  # 另一条规格照常出结果

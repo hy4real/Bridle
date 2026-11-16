@@ -53,11 +53,11 @@ _spec("S2.3", "A2", "取消是协作式传播：在途工具收到 cancel，账�
 _spec("S2.4", "A2", "状态存「意图 + 标识 + 结果」三件套，能判定是否已执行",
       "harness verify S2.4", "M1", checks_m1.check_s24)
 _spec("S2.5", "A2", "真 SIGKILL 落在「意图已写、结果未写」窗口：可重放副作用恢复后收敛",
-      "harness verify S2.5", "M7")
+      "harness verify S2.5", "M7", checks_m7.check_s25)
 _spec("S2.6", "A2", "不可重放副作用结果未知时不自动重放：恢复停在 blocked，账本记 unknown",
-      "harness verify S2.6", "M7")
+      "harness verify S2.6", "M7", checks_m7.check_s26)
 _spec("S2.7", "A2", "unknown 只能显式解除：resolve applied 不重跑，not-applied 恰好再执行一次",
-      "harness verify S2.7", "M7")
+      "harness verify S2.7", "M7", checks_m7.check_s27)
 _spec("S2.8", "A2", "幂等键带 run 与 step 作用域：跨 run 不误去重，同键异意图报冲突",
       "harness verify S2.8", "M7", checks_m7.check_s28)
 _spec("S2.9", "A2", "声明了反查的不可重放副作用：查到已执行则不重跑，查不到仍按未知处理",

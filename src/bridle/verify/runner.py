@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 
-from .registry import CheckResult, Spec, Status
+from .registry import CheckResult, Spec, Status, failed
 from . import specs as spec_module
 
 
@@ -19,13 +19,24 @@ class Outcome:
     result: CheckResult
 
 
+def _run(spec: Spec) -> Outcome:
+    """断言函数自己抛异常，算这一条失败，不让一条规格把整个 verify 带崩。
+
+    子进程类的断言（超时、被杀）出问题时尤其需要：其余规格照常出结果。
+    """
+    try:
+        result = spec_module.run(spec)
+    except Exception as error:  # noqa: BLE001
+        result = failed(f"断言函数自身抛出异常：{type(error).__name__}: {error}")
+    return Outcome(spec, result)
+
+
 def run_all() -> list[Outcome]:
-    return [Outcome(spec, spec_module.run(spec)) for spec in spec_module.SPECS]
+    return [_run(spec) for spec in spec_module.SPECS]
 
 
 def run_one(sid: str) -> Outcome:
-    spec = spec_module.by_id(sid)
-    return Outcome(spec, spec_module.run(spec))
+    return _run(spec_module.by_id(sid))
 
 
 def summary_line(outcomes: list[Outcome]) -> str:
@@ -44,7 +55,7 @@ def format_list() -> str:
     for spec in spec_module.SPECS:
         lines.append(f"{spec.id:<6} {spec.milestone:<7} {spec.area:<5} {spec.title}")
     lines.append("")
-    lines.append(summary_line([Outcome(s, spec_module.run(s)) for s in spec_module.SPECS]))
+    lines.append(summary_line(run_all()))
     return "\n".join(lines)
 
 
