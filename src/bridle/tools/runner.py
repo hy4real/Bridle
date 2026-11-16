@@ -11,6 +11,7 @@ from __future__ import annotations
 import concurrent.futures
 from typing import Any
 
+from ..effects import scoped_key, validate_run_id
 from ..runtime.ledger import EffectLedger
 from .base import OutcomeKind, Tool, ToolOutcome, ToolProtocolError
 
@@ -20,10 +21,12 @@ class ToolRunner:
         self,
         ledger: EffectLedger | None = None,
         *,
+        run_id: str | None = None,
         retries: int = 2,
         timeout_s: float = 2.0,
     ) -> None:
         self.ledger = ledger
+        self.run_id = validate_run_id(run_id) if run_id is not None else None
         self.retries = retries
         self.timeout_s = timeout_s
 
@@ -61,12 +64,16 @@ class ToolRunner:
         )
 
     # --- 对外入口 ---
-    def call(self, tool: Tool, args: dict[str, Any]) -> ToolOutcome:
+    def call(self, tool: Tool, args: dict[str, Any], *, step_index: int = 0) -> ToolOutcome:
         tool.validate(args)
 
-        if tool.side_effect and self.ledger is not None:
+        if tool.side_effect:
+            if self.ledger is None or self.run_id is None:
+                # 没有账本或没有作用域的写，就是一条不受约束的重试路径。不提供。
+                raise RuntimeError(
+                    f"{tool.name} 带副作用：必须给 ToolRunner 提供 ledger 与 run_id 才能调用")
             key_fn = tool.idempotency_key or (lambda a: f"{tool.name}:{sorted(a.items())}")
-            key = key_fn(args)
+            key = scoped_key(self.run_id, step_index, key_fn(args))
             last_error: Exception | None = None
             for _ in range(self.retries + 1):
                 try:

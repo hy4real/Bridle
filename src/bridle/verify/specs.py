@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from . import checks_m1, checks_m2, checks_m3, checks_m4, checks_m5, checks_m6
+from . import checks_m1, checks_m2, checks_m3, checks_m4, checks_m5, checks_m6, checks_m7
 from .registry import CheckResult, Spec, not_implemented
 
 _SPECS: list[Spec] = []
@@ -59,7 +59,7 @@ _spec("S2.6", "A2", "不可重放副作用结果未知时不自动重放：恢�
 _spec("S2.7", "A2", "unknown 只能显式解除：resolve applied 不重跑，not-applied 恰好再执行一次",
       "harness verify S2.7", "M7")
 _spec("S2.8", "A2", "幂等键带 run 与 step 作用域：跨 run 不误去重，同键异意图报冲突",
-      "harness verify S2.8", "M7")
+      "harness verify S2.8", "M7", checks_m7.check_s28)
 _spec("S2.9", "A2", "声明了反查的不可重放副作用：查到已执行则不重跑，查不到仍按未知处理",
       "harness verify S2.9", "M7")
 

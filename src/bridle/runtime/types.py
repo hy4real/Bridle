@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
 
+from ..effects import scoped_key
+
 
 class Durability(str, Enum):
     """checkpoint 写入时机。
@@ -102,6 +104,12 @@ class StepContext:
     ledger: Any
     cancel: CancelToken
     tool_delay: float = 0.0
+    run_id: str = ""
+    step_index: int = 0
+
+    def effect_key(self, business_key: str) -> str:
+        """步骤里的副作用一律用它取键：带上 run 与 step 作用域，跨 run 不会误命中。"""
+        return scoped_key(self.run_id, self.step_index, business_key)
 
     def sleep_or_cancel(self, seconds: float) -> None:
         """模拟慢工具：分段等待，保证取消能在 100ms 级别生效。"""

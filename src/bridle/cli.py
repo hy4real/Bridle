@@ -14,6 +14,7 @@ import signal
 import sys
 from pathlib import Path
 
+from .effects import IdempotencyKeyConflict, RunAlreadyExists
 from .model import Termination, classify_choice
 from .policy import ApprovalPolicy, CommandRules, Decision, PolicyEngine, Rule, SandboxMode
 from .runtime import AgentRuntime, Durability, RunStatus
@@ -26,11 +27,13 @@ from .tools.runner import ToolRunner
 from .concurrency import BoundedRunner
 from .eval import run_suite
 from .eval.suite import summarize
-from .runtime.demo import EffectSink, build_demo_task
+from .runtime.demo import EffectSink, build_demo_task, demo_effect_key
 from .runtime.types import CancelToken
 from .verify import runner, specs
 from .verify.registry import Status
 
+EXIT_RUN_EXISTS = 6
+EXIT_KEY_CONFLICT = 8
 EXIT_POLICY_DENIED = 12
 EXIT_SANDBOX_UNAVAILABLE = 13
 EXIT_STRUCTURED_ABORTED = 14
@@ -87,6 +90,14 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 crash_after_step=args.crash_after_step,
             )
         report = runtime.run(resume=args.resume)
+    except RunAlreadyExists as error:
+        print(json.dumps({"code": "RUN_ALREADY_EXISTS", "run_id": error.run_id,
+                          "error": str(error)}, ensure_ascii=False))
+        return EXIT_RUN_EXISTS
+    except IdempotencyKeyConflict as error:
+        print(json.dumps({"code": "IDEMPOTENCY_KEY_CONFLICT", "key": error.key,
+                          "error": str(error)}, ensure_ascii=False))
+        return EXIT_KEY_CONFLICT
     finally:
         signal.signal(signal.SIGINT, previous)
 
@@ -98,7 +109,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "ledger": {
             "rows": runtime.ledger.rows(),
             "attempts": runtime.ledger.attempts_log(),
-            "has_executed": runtime.ledger.has_executed(args.effect_key),
+            "has_executed": runtime.ledger.has_executed(
+                demo_effect_key(args.run_id, args.effect_key)),
         },
         "sink_rows": len(EffectSink(state_dir).rows()),
         "runtime": getattr(runtime, "name", "native"),
@@ -264,7 +276,7 @@ def _cmd_tool_retry(args: argparse.Namespace) -> int:
     sink_dir = Path(args.sink_dir)
     sink = EffectSink(sink_dir)
     ledger = EffectLedger(sink_dir)
-    runner = ToolRunner(ledger, retries=2, timeout_s=args.timeout)
+    runner = ToolRunner(ledger, run_id=args.run_id, retries=2, timeout_s=args.timeout)
     tool = flaky_write_tool(sink)
 
     outcome = runner.call(tool, {"target": args.target})
@@ -382,6 +394,7 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "tool-retry":
             sub_parser.add_argument("--sink-dir", required=True)
             sub_parser.add_argument("--target", default="notes/a.md")
+            sub_parser.add_argument("--run-id", default="run-1")
             sub_parser.add_argument("--timeout", type=float, default=0.1)
         if name == "extract":
             sub_parser.add_argument("--fake-script", required=True)

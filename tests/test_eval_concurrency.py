@@ -55,6 +55,8 @@ def test_demo_task_runs_on_both_runtimes(runtime_name: str, tmp_path: Path) -> N
     assert report.status.value == "completed"
     assert report.steps_run == ["plan", "apply_effect", "report"]
     assert len(EffectSink(tmp_path).rows()) == 1
+    # 两个 runtime 写出的账本键必须相同：键作用域（run + step 下标）不是 native 独有的
+    assert [row["key"] for row in runtime.ledger.rows()] == ["run-1:1:demo-effect-1"]
 
 
 def test_langgraph_export_roundtrip(tmp_path: Path) -> None:

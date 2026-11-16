@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 from enum import Enum
 
 
@@ -56,3 +57,38 @@ class IdempotencyKeyConflict(RuntimeError):
 
 class StateVersionMismatch(RuntimeError):
     """state 目录是旧结构写的。不做迁移：换一个新目录。"""
+
+
+class RunAlreadyExists(RuntimeError):
+    """这个 run id 在这个 state 目录里已经跑过。要接着跑用 resume，要重新跑换一个 run id。
+
+    没有这道守卫，键作用域就是摆设：两次都用默认 run id，键仍然一样，第二次照样命中第一次的结果。
+    """
+
+    def __init__(self, run_id: str) -> None:
+        super().__init__(f"run_id={run_id} 已存在：继续执行请用 resume，重新执行请换一个 run id")
+        self.run_id = run_id
+
+
+_RUN_ID = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def validate_run_id(run_id: str) -> str:
+    """run id 要拼进键里，所以不许含分隔符 `:`，否则不同的 (run, step) 能拼出同一个键。"""
+    if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id):
+        raise ValueError(f"run_id 只能由字母、数字、点、下划线、连字符组成，实际 {run_id!r}")
+    return run_id
+
+
+def scoped_key(run_id: str, step_index: int, business_key: str) -> str:
+    """账本键的唯一生成处：`{run_id}:{step_index}:{business_key}`。
+
+    前两段不含 `:`（run id 有字符集限制，step_index 是非负整数），所以从左切两刀一定还原得回来，
+    业务键里带 `:` 也不会和别的作用域撞。同一步内相同的业务键会合并成一个副作用，这是有意的。
+    """
+    validate_run_id(run_id)
+    if not isinstance(step_index, int) or isinstance(step_index, bool) or step_index < 0:
+        raise ValueError(f"step_index 必须是非负整数，实际 {step_index!r}")
+    if not business_key:
+        raise ValueError("business_key 不能为空")
+    return f"{run_id}:{step_index}:{business_key}"

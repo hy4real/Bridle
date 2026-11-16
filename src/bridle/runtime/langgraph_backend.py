@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, TypedDict
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
 
+from ..effects import RunAlreadyExists, validate_run_id
 from .ledger import EffectLedger
 from .types import (
     Cancelled,
@@ -53,7 +55,7 @@ class LangGraphRuntime:
         self.task = task
         self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
-        self.run_id = run_id
+        self.run_id = validate_run_id(run_id)
         self.cancel = cancel or CancelToken()
         self.tool_delay = tool_delay
         self.crash_after_step = crash_after_step
@@ -68,14 +70,15 @@ class LangGraphRuntime:
     # --- 图 ---
     def _build(self):
         task = self.task
-        ctx = StepContext(state={}, ledger=self.ledger, cancel=self.cancel,
-                          tool_delay=self.tool_delay)
+        base_ctx = StepContext(state={}, ledger=self.ledger, cancel=self.cancel,
+                               tool_delay=self.tool_delay, run_id=self.run_id)
 
         def run_step(state: _State) -> _State:
             index = state.get("step_index", 0)
             if index >= len(task.steps):
                 return {"step_index": index, "steps_done": state.get("steps_done", [])}
             step = task.steps[index]
+            ctx = replace(base_ctx, step_index=index)  # 与 native 相同的键作用域
             ctx.state.setdefault("plan", {"effect_key": self.effect_key})
             step.action(ctx)
             # 崩溃注入：副作用已发生、这个 superstep 的 checkpoint 还没落
@@ -109,6 +112,8 @@ class LangGraphRuntime:
                 report.replayed_steps = (
                     [self.task.steps[previous].name] if previous < len(self.task.steps) else [])
             else:
+                if self.graph.get_state(self._config).values:
+                    raise RunAlreadyExists(self.run_id)
                 self.graph.invoke({"step_index": 0, "steps_done": []}, self._config)
         except Cancelled:
             report.status = RunStatus.CANCELLED

@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from ..effects import RunAlreadyExists, validate_run_id
 from .checkpointer import Checkpointer
 from .ledger import EffectLedger
 from .types import (
@@ -47,7 +49,7 @@ class AgentRuntime:
         self.task = task
         self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
-        self.run_id = run_id
+        self.run_id = validate_run_id(run_id)
         self.durability = durability
         self.cancel = cancel or CancelToken()
         self.tool_delay = tool_delay
@@ -88,11 +90,14 @@ class AgentRuntime:
             state["status"] = RunStatus.RUNNING.value
             report.replayed_steps = [self.task.steps[state["step_index"]].name]
         else:
+            if self.checkpointer.latest(self.run_id) is not None:
+                raise RunAlreadyExists(self.run_id)
             state = self._fresh_state()
             parent = None
 
         start = int(state["step_index"])
-        ctx = StepContext(state=state, ledger=self.ledger, cancel=self.cancel, tool_delay=self.tool_delay)
+        base_ctx = StepContext(state=state, ledger=self.ledger, cancel=self.cancel,
+                               tool_delay=self.tool_delay, run_id=self.run_id)
 
         for index in range(start, len(self.task.steps)):
             step = self.task.steps[index]
@@ -106,6 +111,8 @@ class AgentRuntime:
                 self.checkpointer.flush()
                 return report
 
+            # 每步一个上下文：step_index 进键的作用域。state 是同一个 dict（replace 是浅拷贝）。
+            ctx = replace(base_ctx, step_index=index)
             try:
                 step.action(ctx)
             except NodeInterrupt:

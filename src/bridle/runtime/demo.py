@@ -12,8 +12,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ..effects import Replay
+from ..effects import Replay, scoped_key
 from .types import Step, StepContext, Task
+
+DEMO_EFFECT_STEP = 1  # apply_effect 在 demo 任务里的下标
+
+
+def demo_effect_key(run_id: str, effect_key: str = "demo-effect-1") -> str:
+    """demo 任务那条副作用在账本里的键。CLI 与验收用它查，不各自拼字符串。"""
+    return scoped_key(run_id, DEMO_EFFECT_STEP, effect_key)
 
 
 class EffectSink:
@@ -58,13 +65,16 @@ def build_demo_task(state_dir: Path, *, effect_key: str = "demo-effect-1") -> Ta
         ctx.state["plan"] = {"effect_key": effect_key}
 
     def apply_effect(ctx: StepContext) -> None:
+        # 账本键与下游键是同一个带作用域的键：两个 run 各写各的一行，不会互相覆盖
+        key = ctx.effect_key(effect_key)
+
         # 慢下游：延迟放在 action 里，取消才会落在"意图已落、结果未落"的窗口内（S2.3）
         def action() -> dict[str, Any]:
             ctx.sleep_or_cancel(ctx.tool_delay)
-            return sink.upsert(effect_key, ctx.state["plan"])
+            return sink.upsert(key, ctx.state["plan"])
 
         result = ctx.ledger.attempt(
-            effect_key,
+            key,
             intent={"op": "upsert", "table": "effects_log", "payload": ctx.state["plan"]},
             action=action,
             replay=Replay.SAFE,  # 下游是按键 upsert

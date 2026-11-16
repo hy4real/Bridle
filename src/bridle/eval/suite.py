@@ -140,7 +140,8 @@ def _e08() -> FailureMode | None:
     with tempfile.TemporaryDirectory() as tmp:
         sink = EffectSink(Path(tmp))
         ledger = EffectLedger(Path(tmp))
-        ToolRunner(ledger, retries=2, timeout_s=0.08).call(flaky_write_tool(sink), {"target": "a"})
+        ToolRunner(ledger, run_id="e08", retries=2, timeout_s=0.08).call(
+            flaky_write_tool(sink), {"target": "a"})
         return None if len(sink.rows()) == 1 else FailureMode.DUPLICATE_EFFECT
 
 
