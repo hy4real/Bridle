@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from agent_harness.concurrency import BoundedRunner
-from agent_harness.eval.suite import FailureMode, run_suite, summarize
+from bridle.concurrency import BoundedRunner
+from bridle.eval.suite import FailureMode, run_suite, summarize
 
 
 def test_suite_has_twenty_cases_and_all_pass() -> None:
@@ -43,13 +43,13 @@ def test_bounded_runner_rejects_invalid_limit() -> None:
 
 @pytest.mark.parametrize("runtime_name", ["native", "langgraph"])
 def test_demo_task_runs_on_both_runtimes(runtime_name: str, tmp_path: Path) -> None:
-    from agent_harness.runtime import AgentRuntime, Durability
-    from agent_harness.runtime.demo import EffectSink, build_demo_task
+    from bridle.runtime import AgentRuntime, Durability
+    from bridle.runtime.demo import EffectSink, build_demo_task
 
     task = build_demo_task(tmp_path)
     runtime = (AgentRuntime(task, tmp_path, durability=Durability.SYNC)
                if runtime_name == "native"
-               else __import__("agent_harness.runtime.langgraph_backend",
+               else __import__("bridle.runtime.langgraph_backend",
                                fromlist=["LangGraphRuntime"]).LangGraphRuntime(task, tmp_path))
     report = runtime.run()
     assert report.status.value == "completed"
@@ -58,8 +58,8 @@ def test_demo_task_runs_on_both_runtimes(runtime_name: str, tmp_path: Path) -> N
 
 
 def test_langgraph_export_roundtrip(tmp_path: Path) -> None:
-    from agent_harness.runtime.langgraph_export import export_checkpoint, import_checkpoint, tables
-    from agent_harness.runtime.types import Checkpoint
+    from bridle.runtime.langgraph_export import export_checkpoint, import_checkpoint, tables
+    from bridle.runtime.types import Checkpoint
 
     checkpoint = Checkpoint(thread_id="t9", checkpoint_id="c9",
                             state={"step_index": 2, "steps_done": ["plan", "apply_effect"]})

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_harness.policy import (
+from bridle.policy import (
     ApprovalPolicy,
     CommandRules,
     Decision,
@@ -21,8 +21,8 @@ from agent_harness.policy import (
     Rule,
     SandboxMode,
 )
-from agent_harness.sandbox import SandboxUnavailable, build_backend
-from agent_harness.workspace import SessionWorkspace
+from bridle.sandbox import SandboxUnavailable, build_backend
+from bridle.workspace import SessionWorkspace
 
 MACOS = sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").exists()
 

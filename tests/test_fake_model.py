@@ -13,7 +13,7 @@ import urllib.request
 
 import pytest
 
-from agent_harness.fake_model.server import FakeModelServer, ScriptedModel
+from bridle.fake_model.server import FakeModelServer, ScriptedModel
 
 
 def _post(base_url: str, payload: dict) -> tuple[int, dict, dict]:

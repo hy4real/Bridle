@@ -229,7 +229,7 @@ def _cmd_tools(args: argparse.Namespace) -> int:
 def _cmd_tool_call(args: argparse.Namespace) -> int:
     from .runtime.demo import EffectSink
 
-    sink_dir = Path(args.sink_dir) if args.sink_dir else Path("/tmp/agent-harness-tool")
+    sink_dir = Path(args.sink_dir) if args.sink_dir else Path("/tmp/bridle-tool")
     if args.name == "note_read":
         tool = note_read()
     elif args.name == "explode":

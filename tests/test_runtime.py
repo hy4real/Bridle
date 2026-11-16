@@ -11,9 +11,9 @@ from pathlib import Path
 
 import pytest
 
-from agent_harness.runtime import Checkpointer, Durability, EffectLedger
-from agent_harness.runtime.checkpointer import _SCHEMA
-from agent_harness.runtime.types import Checkpoint
+from bridle.runtime import Checkpointer, Durability, EffectLedger
+from bridle.runtime.checkpointer import _SCHEMA
+from bridle.runtime.types import Checkpoint
 
 
 def test_checkpointer_creates_three_tables(tmp_path: Path) -> None:
@@ -83,7 +83,7 @@ def test_ledger_records_intent_before_action(tmp_path: Path) -> None:
 
 
 def test_ledger_marks_cancelled(tmp_path: Path) -> None:
-    from agent_harness.runtime.types import Cancelled
+    from bridle.runtime.types import Cancelled
 
     ledger = EffectLedger(tmp_path)
 

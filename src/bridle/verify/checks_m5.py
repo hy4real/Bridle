@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import threading
 
-from agent_harness.cost.ledger import CallRecord, CostLedger
-from agent_harness.fake_model.server import FakeModelServer, ScriptedModel
-from agent_harness.model.gateway import ModelGateway
-from agent_harness.obs.metrics import HighCardinalityLabel, Metrics
-from agent_harness.obs.redact import Redactor
-from agent_harness.obs.tracer import Tracer
-from agent_harness.quota import QuotaLedger
+from bridle.cost.ledger import CallRecord, CostLedger
+from bridle.fake_model.server import FakeModelServer, ScriptedModel
+from bridle.model.gateway import ModelGateway
+from bridle.obs.metrics import HighCardinalityLabel, Metrics
+from bridle.obs.redact import Redactor
+from bridle.obs.tracer import Tracer
+from bridle.quota import QuotaLedger
 
 from .registry import CheckResult, failed, passed
 

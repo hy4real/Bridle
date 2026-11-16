@@ -9,11 +9,11 @@ import tempfile
 import time
 from pathlib import Path
 
-from agent_harness.concurrency import BoundedRunner
-from agent_harness.eval.suite import CaseResult, FailureMode, run_suite, summarize
-from agent_harness.runtime import AgentRuntime, Durability
-from agent_harness.runtime.demo import EffectSink, build_demo_task
-from agent_harness.runtime.langgraph_export import export_checkpoint, import_checkpoint, tables
+from bridle.concurrency import BoundedRunner
+from bridle.eval.suite import CaseResult, FailureMode, run_suite, summarize
+from bridle.runtime import AgentRuntime, Durability
+from bridle.runtime.demo import EffectSink, build_demo_task
+from bridle.runtime.langgraph_export import export_checkpoint, import_checkpoint, tables
 
 from .registry import CheckResult, failed, passed
 
@@ -42,7 +42,7 @@ def check_s71() -> CheckResult:
 # --- S7.2 ---------------------------------------------------------------
 def check_s72() -> CheckResult:
     # 故意制造一个偏离：把配额实现换成"永远放行"，看分类器能不能点名
-    import agent_harness.eval.suite as suite_module
+    import bridle.eval.suite as suite_module
 
     class LeakyQuota:
         def __init__(self, limit: float) -> None:
@@ -105,7 +105,7 @@ def check_s91() -> CheckResult:
 
 # --- S10.1 --------------------------------------------------------------
 def check_s101() -> CheckResult:
-    from agent_harness.runtime.langgraph_backend import LangGraphRuntime
+    from bridle.runtime.langgraph_backend import LangGraphRuntime
 
     outcomes = {}
     for runtime_name in ("native", "langgraph"):
@@ -133,7 +133,7 @@ def check_s101() -> CheckResult:
 
 # --- S10.2 --------------------------------------------------------------
 def check_s102() -> CheckResult:
-    from agent_harness.runtime.types import Checkpoint
+    from bridle.runtime.types import Checkpoint
 
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp)
@@ -165,7 +165,7 @@ def check_s103() -> CheckResult:
     try:
         from langgraph.checkpoint.sqlite import SqliteSaver
 
-        from agent_harness.runtime.langgraph_backend import LangGraphRuntime
+        from bridle.runtime.langgraph_backend import LangGraphRuntime
     except ImportError as error:
         return failed(f"langgraph backend 不可导入：{error}")
 

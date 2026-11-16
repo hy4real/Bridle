@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from agent_harness.tools.base import Tool, ToolProtocolError, estimate_tokens
-from agent_harness.tools.builtin import crashing_tool, note_read
-from agent_harness.tools.registry import build_fixture_registry
+from bridle.tools.base import Tool, ToolProtocolError, estimate_tokens
+from bridle.tools.builtin import crashing_tool, note_read
+from bridle.tools.registry import build_fixture_registry
 
 
 def test_fixture_has_sixty_tools_and_they_cost_tokens() -> None:

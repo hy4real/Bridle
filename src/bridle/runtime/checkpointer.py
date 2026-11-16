@@ -116,7 +116,7 @@ class Checkpointer:
                     checkpoint.ts or time.time(),
                     checkpoint.kind,
                     json.dumps(checkpoint.state, ensure_ascii=False),
-                    json.dumps({"writer": "agent_harness"}, ensure_ascii=False),
+                    json.dumps({"writer": "bridle"}, ensure_ascii=False),
                 ),
             )
             # blob 表：每个 state 键一个"channel"，version 用单调递增序号

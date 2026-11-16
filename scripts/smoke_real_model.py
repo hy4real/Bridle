@@ -23,7 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from agent_harness.model.gateway import ModelGateway, ModelTimeout, QuotaExhausted  # noqa: E402
+from bridle.model.gateway import ModelGateway, ModelTimeout, QuotaExhausted  # noqa: E402
 
 MODEL = os.environ.get("SMOKE_MODEL", "deepseek-flash")
 BASE_URL = "https://api.deepseek.com/v1"

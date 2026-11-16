@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from agent_harness.context.budget import WeightedBudget
-from agent_harness.context.manager import ContextManager
-from agent_harness.context.prefix import has_dynamic_content, prefix_hash
-from agent_harness.fake_model.server import FakeModelServer, ScriptedModel
-from agent_harness.model.gateway import ModelGateway, ModelTimeout, QuotaExhausted, Usage
+from bridle.context.budget import WeightedBudget
+from bridle.context.manager import ContextManager
+from bridle.context.prefix import has_dynamic_content, prefix_hash
+from bridle.fake_model.server import FakeModelServer, ScriptedModel
+from bridle.model.gateway import ModelGateway, ModelTimeout, QuotaExhausted, Usage
 
 
 def _gateway(base_url: str, **kwargs) -> ModelGateway:

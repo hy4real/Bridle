@@ -1,4 +1,4 @@
-# agent-harness
+# Bridle
 
 一个**不预设用途的通用 Agent Harness**：runtime + agent loop + 有主张的默认栈。
 
@@ -195,7 +195,7 @@ uv run python scripts/smoke_real_model.py
 
 ## 验收默认不打真模型
 
-`src/agent_harness/fake_model/` 是一个 OpenAI 兼容的脚本化模型服务，支持注入：
+`src/bridle/fake_model/` 是一个 OpenAI 兼容的脚本化模型服务，支持注入：
 超时、两类 429（带/不带 `retry-after`）、`refusal`、`finish_reason=length`、慢响应。
 理由：**可复现、可注入故障、可离线**。真模型只用于演示与 `eval`。
 
@@ -225,4 +225,4 @@ uv run python scripts/smoke_real_model.py
 
 设计与证据在求职仓库的 `2026-10-16/agent-harness-project/`：
 `sources/`（外部调研）、`specs/`（规格原文）、`design/`（架构与实现计划）。
-**本仓库的 `src/agent_harness/verify/specs.py` 是 `specs/` 的代码镜像，两处必须同步。**
+**本仓库的 `src/bridle/verify/specs.py` 是 `specs/` 的代码镜像，两处必须同步。**

@@ -1,4 +1,4 @@
-# agent-harness 工程约定
+# Bridle 工程约定
 
 ## 范围
 
@@ -19,9 +19,9 @@
 ## 目录
 
 ```
-src/agent_harness/cli.py           命令入口（verify 已实现，run/eval/cost/trace 待接）
-src/agent_harness/verify/          规格登记表 + 执行器 + 输出
-src/agent_harness/fake_model/      脚本化假模型服务（OpenAI 兼容）
+src/bridle/cli.py           命令入口（verify 已实现，run/eval/cost/trace 待接）
+src/bridle/verify/          规格登记表 + 执行器 + 输出
+src/bridle/fake_model/      脚本化假模型服务（OpenAI 兼容）
 tests/                             框架自测 + 假模型行为契约
 scripts/ci.sh                      本地与 CI 同一套检查
 ```

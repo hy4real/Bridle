@@ -23,7 +23,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 def _run(args: list[str], *, timeout: float = 60) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, "-m", "agent_harness.cli", *args],
+        [sys.executable, "-m", "bridle.cli", *args],
         cwd=_REPO_ROOT,
         capture_output=True,
         text=True,
@@ -121,7 +121,7 @@ def check_s23() -> CheckResult:
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp) / "state"
         process = subprocess.Popen(
-            [sys.executable, "-m", "agent_harness.cli", "run",
+            [sys.executable, "-m", "bridle.cli", "run",
              "--state-dir", str(state_dir), "--tool-delay", "2.0"],
             cwd=_REPO_ROOT,
             stdout=subprocess.PIPE,

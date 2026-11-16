@@ -98,8 +98,8 @@ class Tracer:
         return {
             "resourceSpans": [{
                 "resource": {"attributes": [{"key": "service.name",
-                                             "value": {"stringValue": "agent-harness"}}]},
-                "scopeSpans": [{"scope": {"name": "agent_harness"},
+                                             "value": {"stringValue": "bridle"}}]},
+                "scopeSpans": [{"scope": {"name": "bridle"},
                                 "spans": exported}],
             }],
             "redaction_failures": dropped,

@@ -112,7 +112,7 @@ _spec("S10.1", "A10", "同一套验收在 native 与 langgraph 两个 runtime �
 _spec("S10.2", "A10", "checkpoint 可导出为 langgraph 三表结构，并能反向导入继续跑",
       "harness checkpoint export --format langgraph", "M6", checks_m6.check_s102)
 _spec("S10.3", "A10", "「为什么不用现成框架」有代码答案：真 backend + 对照文档",
-      "python -c \"import agent_harness.runtime.langgraph_backend\"", "M6", checks_m6.check_s103)
+      "python -c \"import bridle.runtime.langgraph_backend\"", "M6", checks_m6.check_s103)
 
 SPECS: tuple[Spec, ...] = tuple(_SPECS)
 

@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from agent_harness.verify import runner, specs
-from agent_harness.verify.registry import CheckResult, Status, failed, not_implemented, passed
+from bridle.verify import runner, specs
+from bridle.verify.registry import CheckResult, Status, failed, not_implemented, passed
 
 
 def test_spec_count_matches_docs() -> None:

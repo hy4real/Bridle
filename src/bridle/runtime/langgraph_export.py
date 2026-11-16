@@ -42,7 +42,7 @@ def export_checkpoint(checkpoint: Checkpoint, out_dir: Path) -> Path:
             "versions_seen": {},
             "updated_channels": None,
         },
-        {"source": "agent_harness", "step": checkpoint.state.get("step_index", 0)},
+        {"source": "bridle", "step": checkpoint.state.get("step_index", 0)},
         channel_versions,
     )
     conn.close()

@@ -20,7 +20,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 def _run(args: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, "-m", "agent_harness.cli", *args],
+        [sys.executable, "-m", "bridle.cli", *args],
         cwd=_REPO_ROOT, capture_output=True, text=True, timeout=60,
         env={**os.environ, "PYTHONPATH": str(_REPO_ROOT / "src"), **(env or {})},
     )
