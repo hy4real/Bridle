@@ -79,7 +79,7 @@ _spec("S4.2", "A4", "工具超时重试不重复写：账本仍只有一条",
 _spec("S4.3", "A4", "业务失败（is_error）与协议失败（异常）走不同路径且日志可区分",
       "harness verify S4.3", "M3", checks_m3.check_s43)
 _spec("S4.4", "A4", "不可重放工具超时后不自动重试，且超时真正限住墙钟时间",
-      "harness verify S4.4", "M7")
+      "harness verify S4.4", "M7", checks_m7.check_s44)
 
 # A5 可靠性与护栏
 _spec("S5.1", "A5", "沙箱不可用时 fail-closed（拒绝启动），不是裸跑",

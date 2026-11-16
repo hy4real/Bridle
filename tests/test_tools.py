@@ -70,3 +70,79 @@ def test_missing_required_arg_is_protocol_error() -> None:
 def test_wrong_type_is_protocol_error() -> None:
     with pytest.raises(ToolProtocolError):
         note_read().run({"path": 123})
+
+
+# --- 超时与重试（M7.4）-----------------------------------------------------
+def _runner_fixture(tmp_path):
+    from bridle.runtime import EffectLedger
+    from bridle.runtime.demo import EffectSink
+
+    return EffectSink(tmp_path), EffectLedger(tmp_path)
+
+
+def test_timeout_bounds_wall_time_even_when_the_tool_keeps_running() -> None:
+    import time
+
+    from bridle.tools.runner import ToolRunner
+
+    slow = Tool(name="slow", description="", parameters={"type": "object"},
+                handler=lambda: time.sleep(1.5) or {"ok": True})
+    started = time.monotonic()
+    with pytest.raises(ToolProtocolError):
+        ToolRunner(retries=0, timeout_s=0.05).call(slow, {})
+    assert time.monotonic() - started < 0.5  # 不等那 1.5 秒
+
+
+def test_unsafe_tool_timeout_is_not_retried_and_ledger_says_unknown(tmp_path) -> None:
+    from bridle.effects import EffectOutcomeUnknown
+    from bridle.tools.builtin import flaky_append_tool
+    from bridle.tools.runner import ToolRunner
+
+    sink, ledger = _runner_fixture(tmp_path)
+    tool = flaky_append_tool(sink, slow=0.6)
+
+    with pytest.raises(EffectOutcomeUnknown) as info:
+        ToolRunner(ledger, run_id="r1", retries=2, timeout_s=0.05).call(tool, {"target": "a"})
+
+    row = ledger.rows()[0]
+    assert isinstance(info.value.__cause__, ToolProtocolError)  # 起因是超时
+    assert row["status"] == "unknown" and row["executions"] == 1
+    assert len(sink.append_rows()) == 1  # 重试一次就会是 2 行
+
+    # 再调一次也不执行：unknown 要先解除
+    with pytest.raises(EffectOutcomeUnknown):
+        ToolRunner(ledger, run_id="r1", retries=2, timeout_s=0.05).call(tool, {"target": "a"})
+    assert len(sink.append_rows()) == 1
+
+
+def test_safe_tool_timeout_is_retried_and_converges(tmp_path) -> None:
+    from bridle.tools.builtin import flaky_write_tool
+    from bridle.tools.runner import ToolRunner
+
+    sink, ledger = _runner_fixture(tmp_path)
+    outcome = ToolRunner(ledger, run_id="r1", retries=2, timeout_s=0.05).call(
+        flaky_write_tool(sink, slow_first=0.3), {"target": "a"})
+
+    row = ledger.rows()[0]
+    assert outcome.kind.value == "ok"
+    assert row["status"] == "completed" and row["executions"] == 2
+    assert len(sink.rows()) == 1  # 下游按键 upsert，执行两次仍是一行
+
+
+def test_resolved_applied_effect_yields_a_synthetic_outcome(tmp_path) -> None:
+    from bridle.effects import EffectOutcomeUnknown
+    from bridle.tools.builtin import flaky_append_tool
+    from bridle.tools.runner import ToolRunner
+
+    sink, ledger = _runner_fixture(tmp_path)
+    tool = flaky_append_tool(sink, slow=0.3)
+    runner = ToolRunner(ledger, run_id="r1", retries=2, timeout_s=0.05)
+    with pytest.raises(EffectOutcomeUnknown):
+        runner.call(tool, {"target": "a"})
+
+    ledger.resolve(ledger.rows()[0]["key"], "applied", resolved_by="why")
+    outcome = runner.call(tool, {"target": "a"})
+
+    assert outcome.kind.value == "ok" and outcome.tool == "flaky_append"
+    assert "人工确认" in outcome.payload["note"]
+    assert len(sink.append_rows()) == 1  # 没有再执行

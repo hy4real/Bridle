@@ -14,14 +14,14 @@ import signal
 import sys
 from pathlib import Path
 
-from .effects import IdempotencyKeyConflict, RunAlreadyExists
+from .effects import EffectOutcomeUnknown, IdempotencyKeyConflict, RunAlreadyExists
 from .model import Termination, classify_choice
 from .policy import ApprovalPolicy, CommandRules, Decision, PolicyEngine, Rule, SandboxMode
 from .runtime import AgentRuntime, Durability, RunStatus
 from .runner_exec import run_exec
 from .sandbox import SandboxUnavailable, build_backend
 from .tools.base import ToolProtocolError
-from .tools.builtin import crashing_tool, flaky_write_tool, note_read
+from .tools.builtin import crashing_tool, flaky_append_tool, flaky_write_tool, note_read
 from .tools.registry import build_fixture_registry
 from .tools.runner import ToolRunner
 from .concurrency import BoundedRunner
@@ -32,6 +32,7 @@ from .runtime.types import CancelToken
 from .verify import runner, specs
 from .verify.registry import Status
 
+EXIT_OUTCOME_UNKNOWN = 4
 EXIT_RUN_EXISTS = 6
 EXIT_KEY_CONFLICT = 8
 EXIT_POLICY_DENIED = 12
@@ -269,7 +270,13 @@ def _cmd_tool_call(args: argparse.Namespace) -> int:
 
 
 def _cmd_tool_retry(args: argparse.Namespace) -> int:
-    """复现「超时了但上游已执行」，验证重试不重复写（S4.2）。"""
+    """复现「超时了但上游已执行」。
+
+    flaky_write（可重放，下游 upsert）：重试，不重复写（S4.2）。
+    flaky_append（不可重放）：不重试，账本记 unknown，退出码 4（S4.4）。
+    """
+    import time
+
     from .runtime.demo import EffectSink
     from .runtime.ledger import EffectLedger
 
@@ -277,18 +284,32 @@ def _cmd_tool_retry(args: argparse.Namespace) -> int:
     sink = EffectSink(sink_dir)
     ledger = EffectLedger(sink_dir)
     runner = ToolRunner(ledger, run_id=args.run_id, retries=2, timeout_s=args.timeout)
-    tool = flaky_write_tool(sink)
+    tool = flaky_append_tool(sink) if args.tool == "flaky_append" else flaky_write_tool(sink)
 
-    outcome = runner.call(tool, {"target": args.target})
+    started = time.monotonic()
+    kind, code, exit_code = None, None, 0
+    try:
+        kind = runner.call(tool, {"target": args.target}).kind.value
+    except EffectOutcomeUnknown as error:
+        code, exit_code = "EFFECT_OUTCOME_UNKNOWN", EXIT_OUTCOME_UNKNOWN
+        print(f"[harness] {error}", file=sys.stderr)
+    elapsed = time.monotonic() - started
+
     rows = ledger.rows()
     print(json.dumps({
         "tool": tool.name,
-        "kind": outcome.kind.value,
+        "replay": tool.replay_mode().value,
+        "kind": kind,
+        "code": code,
+        "status": rows[0]["status"] if rows else None,
         "attempts": rows[0]["attempts"] if rows else 0,
+        "executions": rows[0]["executions"] if rows else 0,
         "ledger_rows": len(rows),
         "sink_rows": len(sink.rows()),
+        "append_rows": len(sink.append_rows()),
+        "elapsed_s": round(elapsed, 3),
     }, ensure_ascii=False))
-    return 0
+    return exit_code
 
 
 def _cmd_eval(args: argparse.Namespace) -> int:
@@ -395,6 +416,8 @@ def build_parser() -> argparse.ArgumentParser:
             sub_parser.add_argument("--sink-dir", required=True)
             sub_parser.add_argument("--target", default="notes/a.md")
             sub_parser.add_argument("--run-id", default="run-1")
+            sub_parser.add_argument("--tool", default="flaky_write",
+                                    choices=["flaky_write", "flaky_append"])
             sub_parser.add_argument("--timeout", type=float, default=0.1)
         if name == "extract":
             sub_parser.add_argument("--fake-script", required=True)

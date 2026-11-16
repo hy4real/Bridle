@@ -76,3 +76,29 @@ def flaky_write_tool(sink: Any, *, slow_first: float = 0.5) -> Tool:
         replay=Replay.SAFE,  # 下游按键 upsert：重跑、并发重跑都只留一条
         tags=("write",),
     )
+
+
+def flaky_append_tool(sink: Any, *, slow: float = 2.0) -> Tool:
+    """每次调用：先追加一行、再装死 `slow` 秒（模拟「响应丢失但已执行」的不幂等写）。
+
+    故意**不声明 replay**：带副作用又没声明，按 unsafe 处理。超时后它不该被重试——
+    重试一次，下游就多一行。
+    """
+    def handler(target: str) -> dict[str, Any]:
+        receipt = sink.append(f"append:{target}", {"target": target})
+        time.sleep(slow)
+        return {"ok": True, "appended": receipt["id"]}
+
+    return Tool(
+        name="flaky_append",
+        description="每次调用都会追加一行然后超时的写工具（不幂等）",
+        parameters={
+            "type": "object",
+            "properties": {"target": {"type": "string"}},
+            "required": ["target"],
+        },
+        handler=handler,
+        side_effect=True,
+        idempotency_key=lambda args: f"flaky_append:{args['target']}",
+        tags=("write",),
+    )

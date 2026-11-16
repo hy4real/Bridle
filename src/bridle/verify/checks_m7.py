@@ -15,6 +15,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from ..effects import IdempotencyKeyConflict, Replay, scoped_key
@@ -24,6 +25,7 @@ from .registry import CheckResult, failed, passed
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _ENV = {**os.environ, "PYTHONPATH": str(_REPO_ROOT / "src")}
 
+EXIT_OUTCOME_UNKNOWN = 4
 EXIT_RUN_EXISTS = 6
 
 
@@ -137,4 +139,43 @@ def check_s28() -> CheckResult:
             f"不带 --resume 重跑 r1：退出码 {again.returncode}（{_payload(again).get('code')}）",
             f"默认 run id 连跑两次：退出码 {first.returncode} 然后 {second.returncode}，下游仍 1 行",
             f"同键不同意图：IdempotencyKeyConflict（{conflict}），action 执行 {len(calls)} 次",
+        )
+
+
+# --- S4.4 ---------------------------------------------------------------
+def check_s44() -> CheckResult:
+    """对照 S4.2：那里是可重放工具超时后重试并收敛；这里是不可重放工具超时后**不重试**。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        sink_dir = Path(tmp) / "sink"
+        started = time.monotonic()
+        # flaky_append 每次调用都是「先追加一行，再睡 2 秒」
+        process = _run(["tool-retry", "--sink-dir", str(sink_dir),
+                        "--tool", "flaky_append", "--timeout", "0.1"])
+        wall = time.monotonic() - started
+        payload = _payload(process)
+
+        if process.returncode != EXIT_OUTCOME_UNKNOWN:
+            return failed(f"退出码应为 {EXIT_OUTCOME_UNKNOWN}（结果未知），实际 {process.returncode}",
+                          process.stderr[-400:])
+        rows = _effects(sink_dir)
+        outcomes = _attempt_outcomes(sink_dir)
+        appended = _count(sink_dir / "sink.sqlite", "append_log")
+        if len(rows) != 1 or rows[0]["status"] != "unknown":
+            return failed(f"账本应有 1 条 unknown：{[(r['key'], r['status']) for r in rows]}")
+        if rows[0]["executions"] != 1:
+            return failed(f"不可重放工具超时后被重试了：executions={rows[0]['executions']}")
+        if appended != 1:
+            return failed(f"下游 append_log 应为 1 行，实际 {appended} 行（重试导致重复写）")
+        elapsed = payload.get("elapsed_s")
+        if elapsed is None or elapsed >= 1.0:
+            return failed(f"超时没有限住墙钟时间：超时设 0.1s，调用耗时 {elapsed}s（工具睡 2s）")
+        if wall >= 1.5:
+            return failed(f"进程退出被工具线程拖住：子进程总耗时 {wall:.2f}s（工具睡 2s）")
+
+        return passed(
+            f"工具 {payload.get('tool')} 的 replay={payload.get('replay')}（未声明，按不可重放处理）",
+            f"超时后退出码 {process.returncode}（{payload.get('code')}），没有重试：executions={rows[0]['executions']}",
+            f"ledger 1 条 {rows[0]['status']}；attempt 记录 {outcomes}",
+            f"下游 append_log={appended} 行",
+            f"超时设 0.1s，调用耗时 {elapsed}s，子进程总耗时 {wall:.2f}s（工具本身睡 2s）",
         )

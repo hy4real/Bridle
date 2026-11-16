@@ -24,7 +24,11 @@ def demo_effect_key(run_id: str, effect_key: str = "demo-effect-1") -> str:
 
 
 class EffectSink:
-    """下游系统的最小替身：按键 upsert（真实系统的幂等写）。"""
+    """下游系统的最小替身，两种写法：
+
+    upsert  按键 upsert（真实系统的幂等写）。重跑、并发重跑都只留一条 → `Replay.SAFE`。
+    append  追加（发消息、扣库存那一类）。每调一次多一行 → `Replay.UNSAFE`。
+    """
 
     def __init__(self, state_dir: Path) -> None:
         state_dir = Path(state_dir)
@@ -37,6 +41,14 @@ class EffectSink:
                        payload    TEXT NOT NULL,
                        created_at REAL NOT NULL,
                        updated_at REAL NOT NULL
+                   )"""
+            )
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS append_log (
+                       id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                       key        TEXT NOT NULL,
+                       payload    TEXT NOT NULL,
+                       created_at REAL NOT NULL
                    )"""
             )
 
@@ -52,10 +64,26 @@ class EffectSink:
             )
         return {"key": key, "written_at": now}
 
+    def append(self, key: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """不幂等的写：同一个 key 调两次就是两行。"""
+        now = time.time()
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "INSERT INTO append_log (key, payload, created_at) VALUES (?,?,?)",
+                (key, json.dumps(payload, ensure_ascii=False), now),
+            )
+            row_id = cursor.lastrowid
+        return {"key": key, "id": row_id, "appended_at": now}
+
     def rows(self) -> list[dict[str, Any]]:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             return [dict(r) for r in conn.execute("SELECT * FROM effects_log ORDER BY key")]
+
+    def append_rows(self) -> list[dict[str, Any]]:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            return [dict(r) for r in conn.execute("SELECT * FROM append_log ORDER BY id")]
 
 
 def build_demo_task(state_dir: Path, *, effect_key: str = "demo-effect-1") -> Task:

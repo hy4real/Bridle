@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import threading
 from typing import Any
 
 from ..effects import scoped_key, validate_run_id
@@ -32,14 +33,28 @@ class ToolRunner:
 
     # --- 单次调用（带超时）---
     def _once(self, tool: Tool, args: dict[str, Any]) -> ToolOutcome:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(tool.run, args)
+        """在守护线程里跑工具，等 `timeout_s`。
+
+        不用 `with ThreadPoolExecutor(...)`：它退出时会 join 工作线程，超时就不再限时了；
+        `shutdown(wait=False)` 也不够，池里的线程不是守护线程，解释器退出时仍会等它。
+        超时之后线程还在跑，它的返回值没人读——这正是真实世界的样子：请求超时了，
+        上游可能已经执行。所以超时之后能不能重试，要看工具声明的 `replay`，不看这里。
+        一个后果：重试会和还没结束的上一次调用重叠，`Replay.SAFE` 必须在并发重复下也成立。
+        """
+        box: concurrent.futures.Future[ToolOutcome] = concurrent.futures.Future()
+
+        def work() -> None:
             try:
-                return future.result(timeout=self.timeout_s)
-            except concurrent.futures.TimeoutError as error:
-                # 注意：线程仍在跑。这正是真实世界的样子——请求超时了，上游可能已经执行。
-                raise ToolProtocolError(
-                    f"{tool.name}: 超时 {self.timeout_s}s（上游可能已经执行）") from error
+                box.set_result(tool.run(args))
+            except BaseException as error:  # noqa: BLE001 —— 原样交给等待方
+                box.set_exception(error)
+
+        threading.Thread(target=work, name=f"tool-{tool.name}", daemon=True).start()
+        try:
+            return box.result(timeout=self.timeout_s)
+        except concurrent.futures.TimeoutError as error:
+            raise ToolProtocolError(
+                f"{tool.name}: 超时 {self.timeout_s}s（上游可能已经执行）") from error
 
     @staticmethod
     def _as_payload(outcome: ToolOutcome) -> dict[str, Any]:
