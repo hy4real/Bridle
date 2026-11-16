@@ -2,8 +2,8 @@
 
 ## 范围
 
-通用 Agent Harness：runtime + agent loop + 有主张的默认栈。设计文档在求职仓库
-`2026-10-16/agent-harness-project/`（`design/` 与 `specs/`），**本仓库只放代码与测试**。
+通用 Agent Harness：runtime + agent loop + 有主张的默认栈。设计文档在另一个不公开的设计仓库
+（`agent-harness-project/` 下的 `design/` 与 `specs/`），**本仓库只放代码与测试**。
 
 ## 开发纪律（按优先级）
 

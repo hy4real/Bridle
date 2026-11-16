@@ -267,6 +267,6 @@ uv run python scripts/smoke_real_model.py
 
 ## 与设计文档的关系
 
-设计与证据在求职仓库的 `2026-10-16/agent-harness-project/`：
+设计与证据在另一个不公开的设计仓库（`agent-harness-project/`）：
 `sources/`（外部调研）、`specs/`（规格原文）、`design/`（架构与实现计划）。
 **本仓库的 `src/bridle/verify/specs.py` 是 `specs/` 的代码镜像，两处必须同步。**
