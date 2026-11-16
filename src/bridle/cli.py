@@ -4,17 +4,29 @@
 
 M0: verify
 M1: run（含 resume / durability / 崩溃注入 / 取消）
+M7: effect list / effect resolve（查看与解除结果未知的副作用）
+
+退出码：0 完成；3 中断；4 副作用结果未知（run 停在 blocked）；6 run id 已存在；
+7 run 被另一个进程持有；8 幂等键冲突；12 策略拒绝；13 沙箱不可用；14 结构化输出中止；
+21 工具协议失败；130 取消。
 """
 
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import signal
 import sys
 from pathlib import Path
 
-from .effects import EffectOutcomeUnknown, IdempotencyKeyConflict, RunAlreadyExists
+from .effects import (
+    EffectOutcomeUnknown,
+    IdempotencyKeyConflict,
+    RunAlreadyExists,
+    RunLocked,
+    run_id_of,
+)
 from .model import Termination, classify_choice
 from .policy import ApprovalPolicy, CommandRules, Decision, PolicyEngine, Rule, SandboxMode
 from .runtime import AgentRuntime, Durability, RunStatus
@@ -34,6 +46,7 @@ from .verify.registry import Status
 
 EXIT_OUTCOME_UNKNOWN = 4
 EXIT_RUN_EXISTS = 6
+EXIT_RUN_LOCKED = 7
 EXIT_KEY_CONFLICT = 8
 EXIT_POLICY_DENIED = 12
 EXIT_SANDBOX_UNAVAILABLE = 13
@@ -43,6 +56,7 @@ EXIT_TOOL_PROTOCOL = 21
 _EXIT_BY_STATUS = {
     RunStatus.COMPLETED: 0,
     RunStatus.INTERRUPTED: 3,
+    RunStatus.BLOCKED: EXIT_OUTCOME_UNKNOWN,
     RunStatus.CANCELLED: 130,
 }
 
@@ -95,6 +109,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(json.dumps({"code": "RUN_ALREADY_EXISTS", "run_id": error.run_id,
                           "error": str(error)}, ensure_ascii=False))
         return EXIT_RUN_EXISTS
+    except RunLocked as error:
+        print(json.dumps({"code": "RUN_LOCKED", "run_id": error.run_id,
+                          "error": str(error)}, ensure_ascii=False))
+        return EXIT_RUN_LOCKED
     except IdempotencyKeyConflict as error:
         print(json.dumps({"code": "IDEMPOTENCY_KEY_CONFLICT", "key": error.key,
                           "error": str(error)}, ensure_ascii=False))
@@ -107,6 +125,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "status": report.status.value,
         "steps_run": report.steps_run,
         "replayed_steps": report.replayed_steps,
+        "error": report.error,
+        "blocked_on": report.blocked_on,
         "ledger": {
             "rows": runtime.ledger.rows(),
             "attempts": runtime.ledger.attempts_log(),
@@ -312,6 +332,64 @@ def _cmd_tool_retry(args: argparse.Namespace) -> int:
     return exit_code
 
 
+def _open_ledger(state_dir: Path):
+    """只打开已存在的账本。目录敲错时报错，不凭空建一个空库。"""
+    from .runtime.ledger import EffectLedger
+
+    try:
+        return EffectLedger(state_dir, create=False)
+    except FileNotFoundError as error:
+        print(json.dumps({"code": "NO_LEDGER", "error": str(error)}, ensure_ascii=False))
+        return None
+
+
+def _cmd_effect_list(args: argparse.Namespace) -> int:
+    ledger = _open_ledger(Path(args.state_dir))
+    if ledger is None:
+        return 1
+    rows = ledger.rows(status=args.status)
+    print(json.dumps({
+        "count": len(rows),
+        "effects": [{
+            "key": row["key"], "status": row["status"], "replay": row["replay"],
+            "attempts": row["attempts"], "executions": row["executions"],
+            "intent": json.loads(row["intent_json"]),
+            "resolved_by": row["resolved_by"],
+        } for row in rows],
+    }, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _cmd_effect_resolve(args: argparse.Namespace) -> int:
+    """把一条 unknown 解除成「已执行」或「没执行」。这是人的判断，账本只负责记下是谁判的。"""
+    from .runtime.lock import run_lock
+
+    state_dir = Path(args.state_dir)
+    ledger = _open_ledger(state_dir)
+    if ledger is None:
+        return 1
+    outcome = args.outcome.replace("-", "_")
+    try:
+        # 必须持有 run 锁：那个 run 的进程如果还活着，此刻下结论就是在猜
+        with run_lock(state_dir, run_id_of(args.key)):
+            ledger.resolve(args.key, outcome, resolved_by=args.by)
+    except RunLocked as error:
+        print(json.dumps({"code": "RUN_LOCKED", "run_id": error.run_id,
+                          "error": str(error)}, ensure_ascii=False))
+        return EXIT_RUN_LOCKED
+    except KeyError:
+        print(json.dumps({"code": "NO_SUCH_EFFECT", "key": args.key}, ensure_ascii=False))
+        return 1
+    except ValueError as error:
+        print(json.dumps({"code": "NOT_RESOLVABLE", "key": args.key, "error": str(error)},
+                         ensure_ascii=False))
+        return 1
+    row = next(row for row in ledger.rows() if row["key"] == args.key)
+    print(json.dumps({"key": args.key, "outcome": outcome, "status": row["status"],
+                      "resolved_by": row["resolved_by"]}, ensure_ascii=False))
+    return 0
+
+
 def _cmd_eval(args: argparse.Namespace) -> int:
     first = run_suite()
     second = run_suite()
@@ -424,6 +502,21 @@ def build_parser() -> argparse.ArgumentParser:
             sub_parser.add_argument("--sink-dir", required=True)
             sub_parser.add_argument("--key", default="extract-1")
         sub_parser.set_defaults(func=func)
+
+    effect = sub.add_parser("effect", help="查看与解除副作用账本里的记录")
+    effect_sub = effect.add_subparsers(dest="effect_command", required=True)
+    effect_list = effect_sub.add_parser("list", help="列出账本记录")
+    effect_list.add_argument("--state-dir", required=True)
+    effect_list.add_argument("--status", default=None,
+                             choices=["pending", "completed", "cancelled", "unknown"])
+    effect_list.set_defaults(func=_cmd_effect_list)
+    effect_resolve = effect_sub.add_parser(
+        "resolve", help="把一条 unknown 解除成已执行（不再执行）或没执行（下次执行）")
+    effect_resolve.add_argument("--state-dir", required=True)
+    effect_resolve.add_argument("--key", required=True)
+    effect_resolve.add_argument("--outcome", required=True, choices=["applied", "not-applied"])
+    effect_resolve.add_argument("--by", default=getpass.getuser(), help="解除人，写进账本")
+    effect_resolve.set_defaults(func=_cmd_effect_resolve)
     return parser
 
 

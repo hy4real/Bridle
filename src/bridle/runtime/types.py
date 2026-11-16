@@ -29,6 +29,7 @@ class RunStatus(str, Enum):
     INTERRUPTED = "interrupted"
     CANCELLED = "cancelled"
     CRASHED = "crashed"
+    BLOCKED = "blocked"  # 有副作用结果未知且不可重放，等人 resolve
 
 
 class Cancelled(Exception):
@@ -128,3 +129,4 @@ class RunReport:
     steps_run: list[str] = field(default_factory=list)
     replayed_steps: list[str] = field(default_factory=list)
     error: str | None = None
+    blocked_on: str | None = None  # blocked 时：卡在哪个副作用键上

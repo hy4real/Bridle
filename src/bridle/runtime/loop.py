@@ -8,19 +8,27 @@
 
 **恢复 = 从 checkpoint 记录的 step_index 重跑**，不是从断点续行。
 所以步骤必须假设自己会被重跑——这是 S2.2 的前提，不是缺陷。
+
+步骤没有正常跑完（中断、取消、副作用结果未知）时，落盘的是**进入该步之前**的状态快照：
+步骤可能已经改了一半 state，把半步修改存下来，恢复重跑时它们会被再应用一遍。
+
+副作用结果未知且不可重放时，run 停在 `blocked`。恢复会重新进入这一步，
+账本里的 `unknown` 被 `resolve` 之前一直停在 `blocked`——不会自动重放。
 """
 
 from __future__ import annotations
 
+import copy
 import os
 import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from ..effects import RunAlreadyExists, validate_run_id
+from ..effects import EffectOutcomeUnknown, RunAlreadyExists, validate_run_id
 from .checkpointer import Checkpointer
 from .ledger import EffectLedger
+from .lock import run_lock
 from .types import (
     Cancelled,
     CancelToken,
@@ -75,6 +83,11 @@ class AgentRuntime:
 
     # --- 主循环 ---
     def run(self, *, resume: bool = False) -> RunReport:
+        # 整个 run 期间持有 run 锁；进程被杀时内核释放
+        with run_lock(self.state_dir, self.run_id):
+            return self._run(resume=resume)
+
+    def _run(self, *, resume: bool) -> RunReport:
         report = RunReport(run_id=self.run_id, status=RunStatus.RUNNING)
 
         if resume:
@@ -88,7 +101,9 @@ class AgentRuntime:
                 report.steps_run = list(state.get("steps_done", []))
                 return report
             state["status"] = RunStatus.RUNNING.value
-            report.replayed_steps = [self.task.steps[state["step_index"]].name]
+            # 最后一步的 checkpoint 写完、final 还没写就被杀：step_index 等于步数，没有要重跑的步
+            if state["step_index"] < len(self.task.steps):
+                report.replayed_steps = [self.task.steps[state["step_index"]].name]
         else:
             if self.checkpointer.latest(self.run_id) is not None:
                 raise RunAlreadyExists(self.run_id)
@@ -113,23 +128,18 @@ class AgentRuntime:
 
             # 每步一个上下文：step_index 进键的作用域。state 是同一个 dict（replace 是浅拷贝）。
             ctx = replace(base_ctx, step_index=index)
+            entry = copy.deepcopy(state)  # 步入口快照：这一步没跑完时，落盘的是它
             try:
                 step.action(ctx)
             except NodeInterrupt:
-                state["status"] = RunStatus.INTERRUPTED.value
-                self._save(state, parent, kind="interrupted")
-                self.checkpointer.flush()
-                report.status = RunStatus.INTERRUPTED
-                report.steps_run = list(state["steps_done"])
-                return report
+                return self._stop(report, entry, parent, RunStatus.INTERRUPTED)
             except Cancelled:
-                state["status"] = RunStatus.CANCELLED.value
-                self._save(state, parent, kind="cancelled")
-                self.checkpointer.flush()
-                report.status = RunStatus.CANCELLED
-                report.steps_run = list(state["steps_done"])
-                report.error = f"cancelled during {step.name}"
-                return report
+                return self._stop(report, entry, parent, RunStatus.CANCELLED,
+                                  error=f"cancelled during {step.name}")
+            except EffectOutcomeUnknown as error:
+                report.blocked_on = error.key
+                return self._stop(report, entry, parent, RunStatus.BLOCKED,
+                                  error=f"blocked during {step.name}: {error}")
 
             state["step_index"] = index + 1
             state["steps_done"].append(step.name)
@@ -146,4 +156,22 @@ class AgentRuntime:
         self._save(state, parent, kind="final")
         self.checkpointer.flush()
         report.status = RunStatus.COMPLETED
+        return report
+
+    def _stop(
+        self,
+        report: RunReport,
+        entry: dict[str, Any],
+        parent: str | None,
+        status: RunStatus,
+        *,
+        error: str | None = None,
+    ) -> RunReport:
+        """步骤没有正常跑完：把步入口快照连同状态写清楚再退出（exit 档也要落盘）。"""
+        entry["status"] = status.value
+        self._save(entry, parent, kind=status.value)
+        self.checkpointer.flush()
+        report.status = status
+        report.steps_run = list(entry["steps_done"])
+        report.error = error
         return report

@@ -70,6 +70,14 @@ class RunAlreadyExists(RuntimeError):
         self.run_id = run_id
 
 
+class RunLocked(RuntimeError):
+    """这个 run 正被另一个进程持有。"""
+
+    def __init__(self, run_id: str) -> None:
+        super().__init__(f"run_id={run_id} 正被另一个进程持有")
+        self.run_id = run_id
+
+
 _RUN_ID = re.compile(r"[A-Za-z0-9._-]+")
 
 
@@ -92,3 +100,11 @@ def scoped_key(run_id: str, step_index: int, business_key: str) -> str:
     if not business_key:
         raise ValueError("business_key 不能为空")
     return f"{run_id}:{step_index}:{business_key}"
+
+
+def run_id_of(key: str) -> str:
+    """从带作用域的键里取回 run id（`scoped_key` 的逆运算的第一段）。"""
+    run_id, separator, _ = key.partition(":")
+    if not separator:
+        raise ValueError(f"不是带作用域的键：{key!r}")
+    return validate_run_id(run_id)

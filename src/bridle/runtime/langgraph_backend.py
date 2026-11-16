@@ -21,6 +21,7 @@ from langgraph.graph import END, StateGraph
 
 from ..effects import RunAlreadyExists, validate_run_id
 from .ledger import EffectLedger
+from .lock import run_lock
 from .types import (
     Cancelled,
     CancelToken,
@@ -103,6 +104,10 @@ class LangGraphRuntime:
         return {"configurable": {"thread_id": self.run_id, "checkpoint_ns": ""}}
 
     def run(self, *, resume: bool = False) -> RunReport:
+        with run_lock(self.state_dir, self.run_id):
+            return self._run(resume=resume)
+
+    def _run(self, *, resume: bool) -> RunReport:
         report = RunReport(run_id=self.run_id, status=RunStatus.RUNNING)
         try:
             if resume:
