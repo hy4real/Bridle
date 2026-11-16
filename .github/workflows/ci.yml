@@ -2,7 +2,8 @@ name: ci
 on: [push, pull_request]
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # 沙箱后端是 macOS Seatbelt（/usr/bin/sandbox-exec），S1.1、S1.2 等规格只能在 macOS 上跑
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
