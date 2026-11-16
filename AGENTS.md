@@ -19,7 +19,9 @@
 ## 目录
 
 ```
-src/bridle/cli.py           命令入口（verify / run / effect / eval / limits / tools / tool-call / tool-retry / sandbox-probe / policy-check / exec / extract）
+src/bridle/cli.py           命令入口（verify / run / agent / effect / eval / limits / tools / tool-call / tool-retry / sandbox-probe / policy-check / exec / extract）
+src/bridle/agent/          模型循环：model → tool → model，作为动态任务跑在 runtime 上
+src/bridle/effects.py      副作用的公共词汇：Replay、键作用域、结果未知等异常
 src/bridle/verify/          规格登记表 + 执行器 + 输出
 src/bridle/fake_model/      脚本化假模型服务（OpenAI 兼容）
 tests/                             框架自测 + 假模型行为契约

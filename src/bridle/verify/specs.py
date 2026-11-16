@@ -5,7 +5,7 @@
 
 新规格先登记为 `not_implemented`（M0 起的做法）：这是**基线**，不是缺陷。
 每完成一条，把对应的 check 换成真断言，状态列从「未实现」变成「通过/失败」，
-同时改 `BASELINE`。M1–M7 的 36 条已全部通过；M8（模型循环）的 5 条见 A11。
+同时改 `BASELINE`。M1–M8 的 41 条已全部通过。
 """
 
 from __future__ import annotations

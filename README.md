@@ -10,12 +10,12 @@
 ```bash
 uv sync --dev
 uv run harness verify --list      # 41 条可验收规格
-uv run harness verify --all       # 逐条跑；各状态条数与 BASELINE 一致
+uv run harness verify --all       # 逐条跑：41 通过 / 0 失败 / 0 未实现
 uv run harness verify S2.1        # 只跑一条
 ./scripts/ci.sh                   # 单测 + 规格数 + 基线断言
 ```
 
-**当前状态：M7 已交付，其 36 条规格全部通过；M8（模型循环）进行中，5 条新规格逐条实现，当前通过数见 `BASELINE`。**
+**当前状态：M8 已交付，41 条规格全部通过。**
 通过数记在 `BASELINE` 里，CI 会比对——**想加通过数必须同时改 BASELINE**，
 没人能悄悄让测试变绿。
 
@@ -192,12 +192,42 @@ uv run harness tool-retry --sink-dir /tmp/b2 --tool flaky_append --timeout 0.1; 
 `--runtime langgraph` 配 `--effect-replay unsafe` 会直接报错。恢复时 `--effect-replay` 要和第一次一致，
 否则意图不同，报幂等键冲突（退出码 8）。设计与已知缺口见设计仓的 `design/decisions.md`。
 
+## M8 做了什么：模型循环
+
+M7 之前 runtime 跑的是三个固定的 Python 步骤，不调用模型。M8 把 model → tool → model
+接进同一个 runtime：每次模型调用是一步，每次工具调用是一步，状态（对话记录、待执行的工具调用、
+最终回答）跟 checkpoint 一起落盘。
+
+```bash
+uv run harness verify S11.1   # 两轮闭环：model → tool:flaky_write → model
+uv run harness verify S11.2   # 工具步被真 SIGKILL：恢复后模型一共只被问 2 次
+uv run harness verify S11.3   # 不可重放工具结果未知 → blocked → effect resolve → 完成
+uv run harness verify S11.4   # 策略拒绝的调用不执行，POLICY_DENIED 作为工具结果交还模型
+uv run harness verify S11.5   # 模型一直要工具：--max-steps 到上限判 failed
+```
+
+验收由父进程起脚本化假模型，子进程跑 `harness agent --base-url ... --prompt ...`。
+脚本的消耗位置留在父进程里，所以「子进程被杀、再起一个恢复」之后，`model.calls` 就是
+两次一共问了模型几次。
+
+| 决定 | 证据 |
+| --- | --- |
+| 模型步提交之后才执行工具步 | 恢复落在工具步时从 checkpoint 取工具调用，不重问模型（S11.2） |
+| 模型调用也经过账本（`replay=safe`） | 回答进账本后、checkpoint 写盘前被杀，恢复拿回同一个回答（`tests/test_agent_loop.py`） |
+| 模型的错回灌给模型，harness 的问题才终止 run | 参数坏了、工具不存在、被策略拒绝 → 带 `is_error` 的工具结果（S11.4）；工具协议失败、模型不可用 → `failed` |
+| 结果未知照样停在 `blocked` | 循环里的不可重放工具被杀后，恢复退出码 4，模型仍只被问 1 次（S11.3） |
+| 步数有上限 | `--max-steps 4` 时第 5 步之前判 `failed`（S11.5） |
+
+边界：`harness agent` 目前不带鉴权参数，只对接本地的假模型服务，没有在真模型上跑过循环；
+工具只有三个演示工具；对话记录不压缩（M12 的范围）；需要审批的工具调用会让 run 停在
+`interrupted`，但审批本身还没有落盘（M11 的范围）；LangGraph backend 不支持动态任务。
+
 ## 收口状态
 
 | 项 | 数字 |
 | --- | --- |
-| 规格 | 41 条：M1–M7 的 36 条通过且带证据，M8 的 5 条逐条实现中（见 `BASELINE`） |
-| 单测 | 以 `uv run pytest` 的输出为准（M7 收口时 136 个） |
+| 规格 | 41 / 41 通过，每条带证据 |
+| 单测 | 167 个 |
 | 回归集 | 20 例，pass_rate 1.0，跑两遍一致 |
 | runtime | native（默认）+ langgraph（可选） |
 
@@ -256,7 +286,7 @@ uv run python scripts/smoke_real_model.py
 | M5 | 观测、成本账本、配额预留结算 | S1.3、S6.1、S6.3、S8.1–S8.3 |
 | M6 | 回归集、langgraph backend、框架对照 | S7.1、S7.2、S9.1、S10.1–S10.3 |
 | M7 | 副作用判据：`replay` 声明、`unknown` 状态、键作用域、真 SIGKILL 验收 | S2.5–S2.9、S4.4 |
-| M8 | 模型循环：model → tool → model 接进 runtime，恢复不重问模型（进行中） | S11.1–S11.5 |
+| M8 | 模型循环：model → tool → model 接进 runtime，恢复不重问模型 | S11.1–S11.5 |
 
 ## 明确不做
 
