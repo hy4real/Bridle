@@ -218,7 +218,10 @@ uv run harness verify S11.5   # 模型一直要工具：--max-steps 到上限判
 | 结果未知照样停在 `blocked` | 循环里的不可重放工具被杀后，恢复退出码 4，模型仍只被问 1 次（S11.3） |
 | 步数有上限 | `--max-steps 4` 时第 5 步之前判 `failed`（S11.5） |
 
-边界：`harness agent` 目前不带鉴权参数，只对接本地的假模型服务，没有在真模型上跑过循环；
+真模型：`--api-key-env DEEPSEEK_API_KEY` 对 `deepseek-flash` 跑过正常闭环、工具步被 SIGKILL 后恢复、
+策略拒绝三个场景，全部通过，记录与三条假模型测不出的发现见 [`docs/real-model-smoke.md`](docs/real-model-smoke.md)。
+
+边界：验收仍跑在假模型上，真模型只有这一次冒烟；不可重放工具在循环里的结果未知只在假模型上验过；
 工具只有三个演示工具；对话记录不压缩（M12 的范围）；需要审批的工具调用会让 run 停在
 `interrupted`，但审批本身还没有落盘（M11 的范围）；LangGraph backend 不支持动态任务。
 

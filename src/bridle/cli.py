@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
 import signal
 import sys
 from pathlib import Path
@@ -165,10 +166,16 @@ def _agent_tools(state_dir: Path, names: list[str] | None, *, hold_after_write: 
     from .tools.registry import ToolRegistry
 
     sink = EffectSink(state_dir)
+    # 描述是提示词的一部分。演示工具原本的描述写的是它自己的故障设定（「第一次调用会超时」），
+    # 真模型冒烟里模型把这句话当成事实转述给了用户。给模型看的描述只说工具做什么。
     available = {
         "note_read": note_read(),
-        "flaky_write": flaky_write_tool(sink, slow_first=0.0),   # 可重放
-        "flaky_append": flaky_append_tool(sink, slow=0.0),        # 不可重放（未声明）
+        "flaky_write": dataclasses.replace(                       # 可重放
+            flaky_write_tool(sink, slow_first=0.0),
+            description="把一条笔记写到下游（同一个 target 再写一次会覆盖，不会多出一条）"),
+        "flaky_append": dataclasses.replace(                      # 不可重放（未声明）
+            flaky_append_tool(sink, slow=0.0),
+            description="往下游追加一条记录（每调用一次就多一条）"),
     }
     unknown = sorted((set(names or []) | {hold_after_write} - {None}) - set(available))
     if unknown:
@@ -206,13 +213,24 @@ def _cmd_agent(args: argparse.Namespace) -> int:
     except ValueError as error:
         print(json.dumps({"code": "BAD_TOOLS", "error": str(error)}, ensure_ascii=False))
         return 2
+    gateway = ModelGateway(args.base_url, model=args.model, retries=1, connect_timeout=10.0,
+                           first_byte_timeout=args.model_timeout, total_timeout=args.model_timeout)
+    if args.api_key_env:
+        # 密钥只从环境变量读进进程；只打印变量名和长度，不打印值、不写盘
+        api_key = os.environ.get(args.api_key_env)
+        if not api_key:
+            print(json.dumps({"code": "MISSING_API_KEY", "env": args.api_key_env,
+                              "error": f"环境变量 {args.api_key_env} 不存在或为空"}, ensure_ascii=False))
+            return 2
+        print(f"[harness] {args.api_key_env} present=True len={len(api_key)}", file=sys.stderr)
+        gateway.with_api_key(api_key)
     config = AgentConfig(
-        gateway=ModelGateway(args.base_url, model=args.model, retries=1,
-                             first_byte_timeout=args.model_timeout, total_timeout=args.model_timeout),
+        gateway=gateway,
         registry=registry,
         policy=PolicyEngine(rules=rules, approval=ApprovalPolicy(args.approval)),
         max_steps=args.max_steps,
         tool_timeout_s=args.tool_timeout,
+        max_tokens=args.max_tokens,
     )
 
     cancel = CancelToken()
@@ -642,6 +660,10 @@ def build_parser() -> argparse.ArgumentParser:
     agent.add_argument("--approval", default="on-request", choices=[a.value for a in ApprovalPolicy])
     agent.add_argument("--tool-timeout", type=float, default=5.0)
     agent.add_argument("--model-timeout", type=float, default=30.0)
+    agent.add_argument("--max-tokens", type=int, default=None,
+                       help="每次模型调用的输出上限。推理模型的 reasoning 也算在里面，给小了回答会被截断")
+    agent.add_argument("--api-key-env", default=None, metavar="NAME",
+                       help="从这个环境变量读 API key（只打印变量名与长度）。本地假模型不需要")
     agent.add_argument("--hold-after-write", default=None, metavar="TOOL",
                        help="验收用：这个工具写完下游后停住，等着被 SIGKILL（30 秒后自行退出）")
     agent.set_defaults(func=_cmd_agent)

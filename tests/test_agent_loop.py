@@ -147,3 +147,42 @@ def test_max_steps_must_be_positive(tmp_path: Path) -> None:
     with FakeModelServer(ScriptedModel([])) as server:
         with pytest.raises(ValueError):
             build_agent_task("x", _config(server, EffectSink(tmp_path), max_steps=0))
+
+
+# --- harness agent 的密钥参数 ---------------------------------------------
+def test_cli_agent_reads_the_api_key_from_the_named_env_var_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    from bridle import cli
+    from bridle.model import gateway as gateway_module
+
+    seen: list[str] = []
+    original = gateway_module.ModelGateway.with_api_key
+
+    def spy(self, api_key: str):
+        seen.append(api_key)
+        return original(self, api_key)
+
+    monkeypatch.setattr(gateway_module.ModelGateway, "with_api_key", spy)
+    monkeypatch.setenv("BRIDLE_TEST_KEY", "k-123456")
+    with FakeModelServer(ScriptedModel([{"content": "好"}])) as server:
+        code = cli.main(["agent", "--state-dir", str(tmp_path / "a"), "--base-url", server.base_url,
+                         "--prompt", "x", "--api-key-env", "BRIDLE_TEST_KEY"])
+    captured = capsys.readouterr()
+
+    assert code == 0 and seen == ["k-123456"]
+    assert "BRIDLE_TEST_KEY present=True len=8" in captured.err
+    assert "k-123456" not in captured.out + captured.err  # 值不出现在任何输出里
+
+
+def test_cli_agent_refuses_to_start_when_the_key_env_var_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    from bridle import cli
+
+    monkeypatch.delenv("BRIDLE_TEST_KEY", raising=False)
+    code = cli.main(["agent", "--state-dir", str(tmp_path / "a"), "--base-url", "http://127.0.0.1:9/v1",
+                     "--prompt", "x", "--api-key-env", "BRIDLE_TEST_KEY"])
+    assert code == 2
+    assert json.loads(capsys.readouterr().out)["code"] == "MISSING_API_KEY"
+    assert not (tmp_path / "a" / "checkpoints.sqlite").exists()  # 没有开始跑
