@@ -1,11 +1,11 @@
-"""36 条规格的登记表。
+"""41 条规格的登记表。
 
 这张表是 `specs/a1-a10-acceptance-specs.md` 的代码镜像。两处必须同步：
 改一处必须改另一处，否则 `harness verify --list` 与文档对不上。
 
 新规格先登记为 `not_implemented`（M0 起的做法）：这是**基线**，不是缺陷。
 每完成一条，把对应的 check 换成真断言，状态列从「未实现」变成「通过/失败」，
-同时改 `BASELINE`。M1–M7 的 36 条已全部通过。
+同时改 `BASELINE`。M1–M7 的 36 条已全部通过；M8（模型循环）的 5 条见 A11。
 """
 
 from __future__ import annotations
@@ -126,6 +126,18 @@ _spec("S10.2", "A10", "checkpoint 可导出为 langgraph 三表结构，并能�
       "harness checkpoint export --format langgraph", "M6", checks_m6.check_s102)
 _spec("S10.3", "A10", "「为什么不用现成框架」有代码答案：真 backend + 对照文档",
       "python -c \"import bridle.runtime.langgraph_backend\"", "M6", checks_m6.check_s103)
+
+# A11 模型循环（M8）：runtime 里跑的是 model → tool → model，恢复时不重问模型已给出的决定
+_spec("S11.1", "A11", "两轮闭环：模型要求调用工具，工具结果回灌，模型给出最终回答",
+      "harness verify S11.1", "M8")
+_spec("S11.2", "A11", "工具步执行中被真 SIGKILL：恢复后不重问模型，副作用收敛",
+      "harness verify S11.2", "M8")
+_spec("S11.3", "A11", "循环里不可重放的工具结果未知：恢复停在 blocked，解除后才继续",
+      "harness verify S11.3", "M8")
+_spec("S11.4", "A11", "策略拒绝的工具调用不执行，拒绝原因作为工具结果回灌给模型",
+      "harness verify S11.4", "M8")
+_spec("S11.5", "A11", "步数上限：模型一直要工具时，到上限判失败，不无限循环",
+      "harness verify S11.5", "M8")
 
 SPECS: tuple[Spec, ...] = tuple(_SPECS)
 

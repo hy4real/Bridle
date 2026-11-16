@@ -1,7 +1,7 @@
 """验收框架与规格表的自测。
 
 这些测试保护的是**框架本身**，不是业务逻辑：
-- 规格数必须与文档一致（36），否则文档与代码会漂移；
+- 规格数必须与文档一致（41），否则文档与代码会漂移；
 - 已交付里程碑（M1–M7）的 36 条必须全部通过，新登记的规格先是「未实现」，
   各状态条数与 BASELINE 逐字一致，否则有人会偷偷把断言写成恒真；
 - PASSED 必须带证据，否则「通过」就等于没跑。
@@ -22,7 +22,7 @@ _BASELINE = Path(__file__).resolve().parents[1] / "BASELINE"
 
 
 def test_spec_count_matches_docs() -> None:
-    assert len(specs.SPECS) == 36
+    assert len(specs.SPECS) == 41
 
 
 def test_spec_ids_are_unique_and_sorted() -> None:
@@ -52,7 +52,7 @@ def test_delivered_specs_pass_and_baseline_matches() -> None:
     「已交付的不许退、未交付的不许假装」。里程碑交付时把它加进 `_DELIVERED_MILESTONES`。
     """
     outcomes = runner.run_all()
-    assert len(outcomes) == 36
+    assert len(outcomes) == 41
     delivered = [o for o in outcomes if o.spec.milestone in _DELIVERED_MILESTONES]
     assert len(delivered) == 36
     for outcome in delivered:
@@ -78,7 +78,7 @@ def test_helpers_and_run_one() -> None:
     assert done.result.evidence  # 通过必须有证据
 
     # 这条断言守护「规格表没有被悄悄改空」
-    assert len(specs.SPECS) == 36
+    assert len(specs.SPECS) == 41
     assert all(spec.check is not None for spec in specs.SPECS)
 
 

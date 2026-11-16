@@ -9,13 +9,13 @@
 
 ```bash
 uv sync --dev
-uv run harness verify --list      # 36 条可验收规格
-uv run harness verify --all       # 逐条跑：36 通过 / 0 失败 / 0 未实现
+uv run harness verify --list      # 41 条可验收规格
+uv run harness verify --all       # 逐条跑；各状态条数与 BASELINE 一致
 uv run harness verify S2.1        # 只跑一条
 ./scripts/ci.sh                   # 单测 + 规格数 + 基线断言
 ```
 
-**当前状态：M7 已交付，36 条规格全部通过。**
+**当前状态：M7 已交付，其 36 条规格全部通过；M8（模型循环）进行中，5 条新规格逐条实现，当前通过数见 `BASELINE`。**
 通过数记在 `BASELINE` 里，CI 会比对——**想加通过数必须同时改 BASELINE**，
 没人能悄悄让测试变绿。
 
@@ -196,8 +196,8 @@ uv run harness tool-retry --sink-dir /tmp/b2 --tool flaky_append --timeout 0.1; 
 
 | 项 | 数字 |
 | --- | --- |
-| 规格 | 36 / 36 通过，每条带证据 |
-| 单测 | 136 个 |
+| 规格 | 41 条：M1–M7 的 36 条通过且带证据，M8 的 5 条逐条实现中（见 `BASELINE`） |
+| 单测 | 以 `uv run pytest` 的输出为准（M7 收口时 136 个） |
 | 回归集 | 20 例，pass_rate 1.0，跑两遍一致 |
 | runtime | native（默认）+ langgraph（可选） |
 
@@ -256,6 +256,7 @@ uv run python scripts/smoke_real_model.py
 | M5 | 观测、成本账本、配额预留结算 | S1.3、S6.1、S6.3、S8.1–S8.3 |
 | M6 | 回归集、langgraph backend、框架对照 | S7.1、S7.2、S9.1、S10.1–S10.3 |
 | M7 | 副作用判据：`replay` 声明、`unknown` 状态、键作用域、真 SIGKILL 验收 | S2.5–S2.9、S4.4 |
+| M8 | 模型循环：model → tool → model 接进 runtime，恢复不重问模型（进行中） | S11.1–S11.5 |
 
 ## 明确不做
 
