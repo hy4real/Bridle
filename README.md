@@ -9,13 +9,13 @@
 
 ```bash
 uv sync --dev
-uv run harness verify --list      # 30 条可验收规格
-uv run harness verify --all       # 逐条跑：30 通过 / 0 失败 / 0 未实现
+uv run harness verify --list      # 36 条可验收规格
+uv run harness verify --all       # 逐条跑：30 通过 / 0 失败 / 6 未实现
 uv run harness verify S2.1        # 只跑一条
 ./scripts/ci.sh                   # 单测 + 规格数 + 基线断言
 ```
 
-**当前状态：M6 已交付，30 条规格全部通过（30/30），67 个单测全过。**
+**当前状态：M6 已交付，其 30 条规格全部通过；M7（副作用判据）进行中，6 条新规格已登记、尚未实现。67 个单测全过。**
 通过数记在 `BASELINE` 里，CI 会比对——**想加通过数必须同时改 BASELINE**，
 没人能悄悄让测试变绿。
 
@@ -159,7 +159,7 @@ SQLite saver 是**两表**（`checkpoints` + `writes`），只有 Postgres saver
 
 | 项 | 数字 |
 | --- | --- |
-| 规格 | 30 / 30 通过，每条带证据 |
+| 规格 | 36 条：M1–M6 的 30 条通过且带证据，M7 的 6 条未实现 |
 | 单测 | 67 个 |
 | 回归集 | 20 例，pass_rate 1.0，跑两遍一致 |
 | runtime | native（默认）+ langgraph（可选） |
@@ -212,6 +212,7 @@ uv run python scripts/smoke_real_model.py
 | M4 | 上下文双层、前缀稳定、模型网关 | S3.1–S3.3、S6.2、S9.2、S9.3 |
 | M5 | 观测、成本账本、配额预留结算 | S1.3、S6.1、S6.3、S8.1–S8.3 |
 | M6 | 回归集、langgraph backend、框架对照 | S7.1、S7.2、S9.1、S10.1–S10.3 |
+| M7 | 副作用判据：`replay` 声明、`unknown` 状态、键作用域、真 SIGKILL 验收（进行中） | S2.5–S2.9、S4.4 |
 
 ## 明确不做
 

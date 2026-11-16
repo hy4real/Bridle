@@ -1,10 +1,11 @@
-"""30 条规格的登记表。
+"""36 条规格的登记表。
 
 这张表是 `specs/a1-a10-acceptance-specs.md` 的代码镜像。两处必须同步：
 改一处必须改另一处，否则 `harness verify --list` 与文档对不上。
 
-M0 阶段：全部 check 返回 `not_implemented`，这是**基线**，不是缺陷。
-每完成一个里程碑，把对应的 check 换成真断言，状态列从「未实现」变成「通过/失败」。
+新规格先登记为 `not_implemented`（M0 起的做法）：这是**基线**，不是缺陷。
+每完成一条，把对应的 check 换成真断言，状态列从「未实现」变成「通过/失败」，
+同时改 `BASELINE`。M1–M6 的 30 条已全部通过；M7 的 6 条见 A2 与 A4。
 """
 
 from __future__ import annotations
@@ -51,6 +52,16 @@ _spec("S2.3", "A2", "取消是协作式传播：在途工具收到 cancel，账�
       "harness verify S2.3", "M1", checks_m1.check_s23)
 _spec("S2.4", "A2", "状态存「意图 + 标识 + 结果」三件套，能判定是否已执行",
       "harness verify S2.4", "M1", checks_m1.check_s24)
+_spec("S2.5", "A2", "真 SIGKILL 落在「意图已写、结果未写」窗口：可重放副作用恢复后收敛",
+      "harness verify S2.5", "M7")
+_spec("S2.6", "A2", "不可重放副作用结果未知时不自动重放：恢复停在 blocked，账本记 unknown",
+      "harness verify S2.6", "M7")
+_spec("S2.7", "A2", "unknown 只能显式解除：resolve applied 不重跑，not-applied 恰好再执行一次",
+      "harness verify S2.7", "M7")
+_spec("S2.8", "A2", "幂等键带 run 与 step 作用域：跨 run 不误去重，同键异意图报冲突",
+      "harness verify S2.8", "M7")
+_spec("S2.9", "A2", "声明了反查的不可重放副作用：查到已执行则不重跑，查不到仍按未知处理",
+      "harness verify S2.9", "M7")
 
 # A3 上下文工程
 _spec("S3.1", "A3", "压缩是 summary + 未压缩尾部双层，压完仍记得早期事实",
@@ -67,6 +78,8 @@ _spec("S4.2", "A4", "工具超时重试不重复写：账本仍只有一条",
       "harness verify S4.2", "M3", checks_m3.check_s42)
 _spec("S4.3", "A4", "业务失败（is_error）与协议失败（异常）走不同路径且日志可区分",
       "harness verify S4.3", "M3", checks_m3.check_s43)
+_spec("S4.4", "A4", "不可重放工具超时后不自动重试，且超时真正限住墙钟时间",
+      "harness verify S4.4", "M7")
 
 # A5 可靠性与护栏
 _spec("S5.1", "A5", "沙箱不可用时 fail-closed（拒绝启动），不是裸跑",
