@@ -53,6 +53,9 @@ class LangGraphRuntime:
         crash_after_step: int | None = None,
         effect_key: str = "demo-effect-1",
     ) -> None:
+        if task.next_step is not None:
+            # 动态任务（模型循环）只在 native runtime 上跑：这个 backend 不跟进 M7 之后的语义
+            raise ValueError("langgraph backend 只支持静态步骤表的任务")
         self.task = task
         self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)

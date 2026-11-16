@@ -58,6 +58,7 @@ _EXIT_BY_STATUS = {
     RunStatus.COMPLETED: 0,
     RunStatus.INTERRUPTED: 3,
     RunStatus.BLOCKED: EXIT_OUTCOME_UNKNOWN,
+    RunStatus.FAILED: 1,
     RunStatus.CANCELLED: 130,
 }
 

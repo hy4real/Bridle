@@ -35,8 +35,10 @@ from .types import (
     Checkpoint,
     Durability,
     NodeInterrupt,
+    RunFailed,
     RunReport,
     RunStatus,
+    Step,
     StepContext,
     Task,
 )
@@ -101,9 +103,6 @@ class AgentRuntime:
                 report.steps_run = list(state.get("steps_done", []))
                 return report
             state["status"] = RunStatus.RUNNING.value
-            # 最后一步的 checkpoint 写完、final 还没写就被杀：step_index 等于步数，没有要重跑的步
-            if state["step_index"] < len(self.task.steps):
-                report.replayed_steps = [self.task.steps[state["step_index"]].name]
         else:
             if self.checkpointer.latest(self.run_id) is not None:
                 raise RunAlreadyExists(self.run_id)
@@ -114,8 +113,18 @@ class AgentRuntime:
         base_ctx = StepContext(state=state, ledger=self.ledger, cancel=self.cancel,
                                tool_delay=self.tool_delay, run_id=self.run_id)
 
-        for index in range(start, len(self.task.steps)):
-            step = self.task.steps[index]
+        while True:
+            index = int(state["step_index"])
+            try:
+                step = self._step_at(state)
+            except RunFailed as error:
+                # 任务在决定下一步时就判定无法继续（例如步数用尽）：此刻没有执行到一半的步
+                return self._stop(report, copy.deepcopy(state), parent, RunStatus.FAILED,
+                                  error=str(error))
+            if step is None:
+                break  # 最后一步的 checkpoint 写完、final 还没写就被杀，恢复时也走到这里
+            if resume and index == start:
+                report.replayed_steps = [step.name]
 
             # 1) 步边界检查取消（协作式，不是 kill 进程）
             if self.cancel.cancelled:
@@ -140,6 +149,9 @@ class AgentRuntime:
                 report.blocked_on = error.key
                 return self._stop(report, entry, parent, RunStatus.BLOCKED,
                                   error=f"blocked during {step.name}: {error}")
+            except RunFailed as error:
+                return self._stop(report, entry, parent, RunStatus.FAILED,
+                                  error=f"failed during {step.name}: {error}")
 
             state["step_index"] = index + 1
             state["steps_done"].append(step.name)
@@ -157,6 +169,13 @@ class AgentRuntime:
         self.checkpointer.flush()
         report.status = RunStatus.COMPLETED
         return report
+
+    def _step_at(self, state: dict[str, Any]) -> Step | None:
+        """下一步是什么。静态任务查表，动态任务问 `next_step`。"""
+        if self.task.next_step is not None:
+            return self.task.next_step(state)
+        index = int(state["step_index"])
+        return self.task.steps[index] if index < len(self.task.steps) else None
 
     def _stop(
         self,

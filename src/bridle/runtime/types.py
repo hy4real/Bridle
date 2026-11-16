@@ -30,6 +30,15 @@ class RunStatus(str, Enum):
     CANCELLED = "cancelled"
     CRASHED = "crashed"
     BLOCKED = "blocked"  # 有副作用结果未知且不可重放，等人 resolve
+    FAILED = "failed"    # 任务自己判定无法继续（模型不可用、步数用尽）；重试没有意义
+
+
+class RunFailed(Exception):
+    """步骤或任务判定这个 run 无法继续：模型超时、配额耗尽、步数上限。
+
+    和取消、中断不同，它不是外部叫停；和结果未知也不同，它没有悬而未决的副作用。
+    run 落成 `failed`，checkpoint 存的是步入口快照。
+    """
 
 
 class Cancelled(Exception):
@@ -89,8 +98,19 @@ class Step:
 
 @dataclass
 class Task:
+    """两种任务：
+
+    静态  `steps` 是固定的步骤表，第 i 步就是 `steps[i]`（M1 起的 demo 任务）。
+    动态  `next_step(state)` 根据当前 state 决定下一步，返回 None 表示结束。
+          模型循环是这种：下一步是调模型还是调工具，看上一步的结果。
+
+    动态任务的 `next_step` 必须**只读 state、不产生副作用**：恢复时它会被重新调用，
+    同一份 state 必须给出同一个下一步。
+    """
+
     name: str
-    steps: list[Step]
+    steps: list[Step] = field(default_factory=list)
+    next_step: Callable[[dict[str, Any]], "Step | None"] | None = None
 
 
 @dataclass
