@@ -3,7 +3,7 @@
 三类事件写在同一张表里（`ledger.sqlite` 的 `events`），共用一个 `seq` 序列：
 
 run 级（runtime 写）    run_started / step_committed / run_stopped / run_resumed /
-                        run_finished / projection_repaired
+                        run_finished / projection_repaired / summary
 副作用级（账本写）      effect_intent / effect_outcome / effect_resolved
 审批级（账本写）        approval_requested / approval_granted / approval_revoked
 
@@ -29,7 +29,7 @@ from typing import Any, Iterator
 from contextlib import contextmanager
 
 RUN_EVENTS = frozenset({"run_started", "step_committed", "run_stopped", "run_resumed",
-                        "run_finished", "projection_repaired"})
+                        "run_finished", "projection_repaired", "summary"})
 EFFECT_EVENTS = frozenset({"effect_intent", "effect_outcome", "effect_resolved"})
 APPROVAL_EVENTS = frozenset({"approval_requested", "approval_granted", "approval_revoked"})
 
@@ -109,6 +109,10 @@ def project(events: list[Event]) -> tuple[dict[str, Any] | None, int]:
             continue
         elif event.type == "step_committed":
             state = apply_delta(state, event.payload["delta"])
+        elif event.type == "summary":
+            state["summary"] = event.payload["summary"]
+            state["first_kept_seq"] = event.payload["first_kept_seq"]
+            state["kept_from_index"] = event.payload["kept_from_index"]
         elif event.type == "run_stopped":
             state["status"] = event.payload["status"]
         elif event.type == "run_resumed":

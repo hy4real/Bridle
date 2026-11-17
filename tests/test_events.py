@@ -167,3 +167,41 @@ def test_approval_events_are_accepted_and_do_not_mutate_projected_state(tmp_path
     state, last_seq = project(events)
     assert state == {"step_index": 0, "status": "running"}
     assert last_seq == 4
+
+
+def test_summary_event_updates_projected_state_and_overwrites_on_next_summary(tmp_path: Path) -> None:
+    ledger = EffectLedger(tmp_path)
+    log = EventLog(ledger.db_path)
+    log.append("r1", "run_started", payload={"state": {"step_index": 0, "messages": ["m0", "m1"], "status": "running"}})
+    log.append("r1", "summary", step_index=1, payload={
+        "summary": "第一次摘要",
+        "first_kept_seq": 1,
+        "kept_from_index": 1,
+    })
+    log.append("r1", "summary", step_index=2, payload={
+        "summary": "第二次摘要",
+        "first_kept_seq": 3,
+        "kept_from_index": 2,
+    })
+
+    state, last_seq = project(log.read("r1"))
+    assert last_seq == 3
+    assert state["summary"] == "第二次摘要"
+    assert state["first_kept_seq"] == 3
+    assert state["kept_from_index"] == 2
+    assert state["messages"] == ["m0", "m1"]
+
+
+def test_append_many_rolls_back_atomically_if_summary_write_fails(tmp_path: Path) -> None:
+    ledger = EffectLedger(tmp_path)
+    log = EventLog(ledger.db_path)
+    log.append("r1", "run_started", payload={"state": {"step_index": 0, "status": "running"}})
+
+    with pytest.raises(ValueError):
+        log.append_many("r1", [
+            ("step_committed", 0, {"step": "compact", "delta": {"set": {"step_index": 1}}}),
+            ("invalid_type", 0, {}),
+        ])
+
+    events = log.read("r1")
+    assert [e.type for e in events] == ["run_started"]

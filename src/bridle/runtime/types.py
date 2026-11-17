@@ -128,6 +128,29 @@ class StepContext:
     tool_delay: float = 0.0
     run_id: str = ""
     step_index: int = 0
+    _pending_summary: dict[str, Any] | None = field(default=None, repr=False)
+
+    def emit_summary(
+        self,
+        summary: str,
+        *,
+        first_kept_seq: int,
+        kept_from_index: int,
+    ) -> None:
+        """登记这一步要随 `step_committed` 同事务写入的 `"summary"` 事件。"""
+        if self._pending_summary is not None:
+            raise ValueError("同一步只能发出一次 summary 事件")
+        if not isinstance(summary, str):
+            raise TypeError("summary 必须是字符串")
+        if isinstance(first_kept_seq, bool) or not isinstance(first_kept_seq, int) or first_kept_seq < 1:
+            raise ValueError(f"first_kept_seq 必须是正整数，实际 {first_kept_seq!r}")
+        if isinstance(kept_from_index, bool) or not isinstance(kept_from_index, int) or kept_from_index < 0:
+            raise ValueError(f"kept_from_index 必须是非负整数，实际 {kept_from_index!r}")
+        self._pending_summary = {
+            "summary": summary,
+            "first_kept_seq": first_kept_seq,
+            "kept_from_index": kept_from_index,
+        }
 
     def effect_key(self, business_key: str) -> str:
         """步骤里的副作用一律用它取键：带上 run 与 step 作用域，跨 run 不会误命中。"""

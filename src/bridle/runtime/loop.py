@@ -98,7 +98,7 @@ class AgentRuntime:
         checkpoint = Checkpoint(
             thread_id=self.run_id,
             checkpoint_id=Checkpointer.new_checkpoint_id(),
-            state=dict(state),
+            state=_json_copy(state),
             parent_checkpoint_id=parent,
             ts=time.time(),
             kind=kind,
@@ -110,7 +110,7 @@ class AgentRuntime:
     def _emit(self, type_: str, *, step_index: int | None = None,
               payload: dict[str, Any] | None = None) -> None:
         if self.durability is Durability.EXIT:
-            self._pending_events.append((type_, step_index, payload or {}))
+            self._pending_events.append((type_, step_index, copy.deepcopy(payload) if payload else {}))
             return
         self._last_seq = self.events.append(self.run_id, type_, step_index=step_index, payload=payload)
 
@@ -183,7 +183,7 @@ class AgentRuntime:
                                   error="cancelled before step")
 
             # 每步一个上下文：step_index 进键的作用域。state 是同一个 dict（replace 是浅拷贝）。
-            ctx = replace(base_ctx, step_index=index)
+            ctx = replace(base_ctx, step_index=index, _pending_summary=None)
             try:
                 step.action(ctx)
             except NodeInterrupt:
@@ -210,9 +210,24 @@ class AgentRuntime:
 
             # 3) 提交：这条事件写进去，这一步就做完了
             after = _json_copy(state)
-            self._emit("step_committed", step_index=index,
-                       payload={"step": step.name, "delta": compute_delta(committed, after)})
-            committed = after
+            commit_payload = {"step": step.name, "delta": compute_delta(committed, after)}
+            summary_payload = ctx._pending_summary
+            if summary_payload is not None:
+                items = [
+                    ("step_committed", index, commit_payload),
+                    ("summary", index, summary_payload),
+                ]
+                if self.durability is Durability.EXIT:
+                    self._pending_events.extend(copy.deepcopy(items))
+                else:
+                    self._last_seq = self.events.append_many(self.run_id, items)[-1]
+                state["summary"] = summary_payload["summary"]
+                state["first_kept_seq"] = summary_payload["first_kept_seq"]
+                state["kept_from_index"] = summary_payload["kept_from_index"]
+                committed = _json_copy(state)
+            else:
+                self._emit("step_committed", step_index=index, payload=commit_payload)
+                committed = after
 
             # 4) 验收用的停顿点：事件已提交、缓存还没写（S12.3）
             if self.hold_after_commit is not None and index == self.hold_after_commit:
