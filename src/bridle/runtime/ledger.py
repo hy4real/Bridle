@@ -40,10 +40,12 @@ from ..effects import (
     StateVersionMismatch,
     VerifyResult,
     stricter,
+    validate_run_id,
 )
+from .events import EVENTS_SCHEMA, append_event
 from .types import Cancelled
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3  # 3：加了 events 表（M9）
 
 _SCHEMA_STATEMENTS = (
     """
@@ -72,7 +74,20 @@ _SCHEMA_STATEMENTS = (
         outcome     TEXT
     )
     """,
+    EVENTS_SCHEMA,
 )
+
+
+def _effect_event(conn: sqlite3.Connection, key: str, type_: str, **payload: Any) -> None:
+    """和账本行在同一个事务里记一条副作用事件。不带作用域的键（只在单测里出现）不记。"""
+    run_id, _, rest = key.partition(":")
+    step, _, _ = rest.partition(":")
+    try:
+        validate_run_id(run_id)
+        step_index = int(step)
+    except ValueError:
+        return
+    append_event(conn, run_id, type_, step_index=step_index, payload={"key": key, **payload})
 
 
 @dataclass(frozen=True)
@@ -258,6 +273,7 @@ class EffectLedger:
                    VALUES (?,?,?,?,?)""",
                 (_new_id(), key, now, now, f"resolved_{outcome}"),
             )
+            _effect_event(conn, key, "effect_resolved", outcome=outcome, resolved_by=resolved_by)
 
     # --- 领取 ---
     def _claim(self, key: str, intent_json: str, intent_hash: str, replay: Replay,
@@ -271,12 +287,15 @@ class EffectLedger:
                    VALUES (?,?,?,?,?)""",
                 (attempt_id, key, now, now, outcome),
             )
+            _effect_event(conn, key, "effect_outcome", attempt_id=attempt_id, outcome=outcome)
 
-        def start(conn: sqlite3.Connection) -> None:
+        def start(conn: sqlite3.Connection, effective: Replay, executions: int) -> None:
             conn.execute(
                 "INSERT INTO effect_attempts (attempt_id, key, started_at, outcome) VALUES (?,?,?,?)",
                 (attempt_id, key, now, "started"),
             )
+            _effect_event(conn, key, "effect_intent", attempt_id=attempt_id, replay=effective.value,
+                          executions=executions, intent_hash=intent_hash)
 
         with self._tx() as conn:
             row = conn.execute("SELECT * FROM effects WHERE key = ?", (key,)).fetchone()
@@ -290,7 +309,7 @@ class EffectLedger:
                     (key, intent_json, intent_hash, replay.value, attempt_id, "pending",
                      1, 1, now, now),
                 )
-                start(conn)
+                start(conn, replay, 1)
                 return _Claim("run", attempt_id, replay, attempts=1, executions=1)
 
             if row["intent_hash"] != intent_hash:
@@ -346,6 +365,8 @@ class EffectLedger:
                        WHERE attempt_id = ? AND outcome = 'started'""",
                     (now, row["attempt_id"]),
                 )
+                _effect_event(conn, key, "effect_outcome", attempt_id=row["attempt_id"],
+                              outcome="orphaned")
             executions += 1
             conn.execute(
                 """UPDATE effects SET status = 'pending', attempt_id = ?, attempts = ?,
@@ -353,7 +374,7 @@ class EffectLedger:
                    WHERE key = ?""",
                 (attempt_id, attempts, executions, effective.value, now, key),
             )
-            start(conn)
+            start(conn, effective, executions)
             return _Claim("run", attempt_id, effective, attempts=attempts, executions=executions)
 
     # --- 反查 ---
@@ -388,12 +409,14 @@ class EffectLedger:
                        WHERE key = ? AND attempt_id = ? AND status = 'pending'""",
                     (now, key, claim.attempt_id),
                 )
+            outcome = ("verified_applied" if applied
+                       else f"verify_{'raced' if verdict == 'applied' else verdict}")
             conn.execute(
                 """INSERT INTO effect_attempts (attempt_id, key, started_at, finished_at, outcome)
                    VALUES (?,?,?,?,?)""",
-                (_new_id(), key, now, now,
-                 "verified_applied" if applied else f"verify_{'raced' if verdict == 'applied' else verdict}"),
+                (_new_id(), key, now, now, outcome),
             )
+            _effect_event(conn, key, "effect_outcome", attempt_id=claim.attempt_id, outcome=outcome)
         if applied:
             return ApplyResult(key=key, value=result, deduplicated=True, attempts=claim.attempts,
                                executions=claim.executions, verified=True)
@@ -430,10 +453,12 @@ class EffectLedger:
                    WHERE key = ? AND attempt_id = ? AND status IN ('pending', 'unknown')""",
                 (result_json, now, key, claim.attempt_id),
             )
+            outcome = "applied" if cursor.rowcount == 1 else "stale_applied"
             conn.execute(
                 "UPDATE effect_attempts SET finished_at = ?, outcome = ? WHERE attempt_id = ?",
-                (now, "applied" if cursor.rowcount == 1 else "stale_applied", claim.attempt_id),
+                (now, outcome, claim.attempt_id),
             )
+            _effect_event(conn, key, "effect_outcome", attempt_id=claim.attempt_id, outcome=outcome)
         return ApplyResult(key=key, value=value, deduplicated=False,
                            attempts=claim.attempts, executions=claim.executions)
 
@@ -450,6 +475,7 @@ class EffectLedger:
                 "UPDATE effect_attempts SET finished_at = ?, outcome = ? WHERE attempt_id = ?",
                 (now, outcome, attempt_id),
             )
+            _effect_event(conn, key, "effect_outcome", attempt_id=attempt_id, outcome=outcome)
 
     # --- 查询（验收与排障用）---
     def rows(self, *, status: str | None = None) -> list[dict[str, Any]]:
