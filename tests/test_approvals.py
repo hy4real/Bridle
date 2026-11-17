@@ -147,13 +147,18 @@ def test_approval_validation_errors_and_exception(tmp_path: Path) -> None:
         ledger.revoke("apr_missing", reason="x")
 
     aid = ledger.request_approval("run-1", 1, "c1", "flaky_write", hash_args({}), "v1")
-    with pytest.raises(ValueError):
-        ledger.approve(aid, ttl_s=10.0, granted_by="")
-    for bad_ttl in (0.0, -1.0, float("nan"), float("inf")):
+    for bad_str in ("", "   "):
+        with pytest.raises(ValueError):
+            ledger.request_approval("run-1", 1, bad_str, "flaky_write", hash_args({}), "v1")
+        with pytest.raises(ValueError):
+            ledger.request_approval("run-1", 1, "c2", bad_str, hash_args({}), "v1")
+        with pytest.raises(ValueError):
+            ledger.approve(aid, ttl_s=10.0, granted_by=bad_str)
+        with pytest.raises(ValueError):
+            ledger.revoke(aid, reason=bad_str)
+    for bad_ttl in (0.0, -1.0, float("nan"), float("inf"), True):
         with pytest.raises(ValueError):
             ledger.approve(aid, ttl_s=bad_ttl, granted_by="why")
-    with pytest.raises(ValueError):
-        ledger.revoke(aid, reason="")
 
     ledger.approve(aid, ttl_s=10.0, granted_by="why")
     with pytest.raises(ValueError):
@@ -255,7 +260,8 @@ def test_removing_ask_or_changing_sandbox_or_approval_revokes_and_blocks(
     assert len(revoked_events) == 1
 
 
-def test_tampered_args_or_tool_revokes_approval(tmp_path: Path) -> None:
+@pytest.mark.parametrize("field", ["args_hash", "tool_name"])
+def test_tampered_args_or_tool_revokes_approval(tmp_path: Path, field: str) -> None:
     model = ScriptedModel([_call_write(), {"content": "不应走到"}])
     with FakeModelServer(model) as server:
         sink = EffectSink(tmp_path)
@@ -267,7 +273,28 @@ def test_tampered_args_or_tool_revokes_approval(tmp_path: Path) -> None:
         ledger.approve(aid, ttl_s=60.0, granted_by="why")
 
         with sqlite3.connect(ledger.db_path) as conn:
-            conn.execute("UPDATE approvals SET args_hash = 'tampered' WHERE approval_id = ?", (aid,))
+            conn.execute(f"UPDATE approvals SET {field} = 'tampered' WHERE approval_id = ?", (aid,))
+            conn.commit()
+
+        blocked = AgentRuntime(build_agent_task("写", cfg), tmp_path).run(resume=True)
+
+    assert blocked.status is RunStatus.BLOCKED and blocked.blocked_on == aid
+    assert EffectLedger(tmp_path).get_approval_by_id(aid)["status"] == "revoked"
+    assert sink.rows() == []
+
+
+def test_missing_expires_at_fails_closed_and_revokes(tmp_path: Path) -> None:
+    model = ScriptedModel([_call_write(), {"content": "不应走到"}])
+    with FakeModelServer(model) as server:
+        sink = EffectSink(tmp_path)
+        cfg = _agent_config(server, sink, rules=[Rule("ask", Decision.PROMPT, "tool:flaky_write*")])
+        assert AgentRuntime(build_agent_task("写", cfg), tmp_path).run().status is RunStatus.INTERRUPTED
+
+        ledger = EffectLedger(tmp_path)
+        aid = ledger.approvals(run_id="run-1")[0]["approval_id"]
+        ledger.approve(aid, ttl_s=60.0, granted_by="why")
+        with sqlite3.connect(ledger.db_path) as conn:
+            conn.execute("UPDATE approvals SET expires_at = NULL WHERE approval_id = ?", (aid,))
             conn.commit()
 
         blocked = AgentRuntime(build_agent_task("写", cfg), tmp_path).run(resume=True)
@@ -385,3 +412,68 @@ def test_cli_approve_paths_lock_and_agent_sandbox_mode(tmp_path: Path, capsys) -
         ])
         out2 = json.loads(capsys.readouterr().out)
         assert code2 == 4 and out2["status"] == "blocked" and out2["blocked_on"] == aid
+
+
+def test_cli_approve_rejects_empty_run_id_without_falling_back(tmp_path: Path, capsys) -> None:
+    ledger = EffectLedger(tmp_path)
+    aid = ledger.request_approval("run-1", 1, "c1", "flaky_write", hash_args({}), "v1")
+    assert cli.main(["approve", "--state-dir", str(tmp_path), "--run-id", ""]) == 1
+    assert json.loads(capsys.readouterr().out)["code"] == "NOT_APPROVABLE"
+    assert ledger.get_approval_by_id(aid)["status"] == "pending"
+
+
+def test_multi_tool_calls_require_per_step_approval(tmp_path: Path) -> None:
+    model = ScriptedModel([
+        {"tool_calls": [
+            {"id": "c1", "name": "flaky_write", "arguments": {"target": "notes/1.md"}},
+            {"id": "c2", "name": "flaky_write", "arguments": {"target": "notes/2.md"}},
+        ]},
+        {"content": "两条都好了"},
+    ])
+    with FakeModelServer(model) as server:
+        sink = EffectSink(tmp_path)
+        cfg = _agent_config(server, sink, rules=[Rule("ask", Decision.PROMPT, "tool:flaky_write*")])
+        r1 = AgentRuntime(build_agent_task("写两份", cfg), tmp_path).run()
+        assert r1.status is RunStatus.INTERRUPTED
+        ledger = EffectLedger(tmp_path)
+        first_pending = ledger.approvals(run_id="run-1", status="pending")
+        assert len(first_pending) == 1 and first_pending[0]["step_index"] == 1
+        ledger.approve(first_pending[0]["approval_id"], ttl_s=60.0, granted_by="why")
+
+        r2 = AgentRuntime(build_agent_task("写两份", cfg), tmp_path).run(resume=True)
+        assert r2.status is RunStatus.INTERRUPTED
+        second_pending = ledger.approvals(run_id="run-1", status="pending")
+        assert len(second_pending) == 1 and second_pending[0]["step_index"] == 2
+        ledger.approve(second_pending[0]["approval_id"], ttl_s=60.0, granted_by="why")
+
+        r3 = AgentRuntime(build_agent_task("写两份", cfg), tmp_path).run(resume=True)
+
+    assert r3.status is RunStatus.COMPLETED
+    assert len(sink.rows()) == 2 and model.calls == 2
+
+
+def test_sigkill_after_approval_resumes_without_reasking_human_or_model(tmp_path: Path) -> None:
+    from bridle.verify.checks_m7 import _KILLED, _effects, _kill_when, _payload, _run, _written
+    from bridle.verify.checks_m8 import _agent
+
+    model = ScriptedModel([_call_write(), {"content": "killed then resumed"}])
+    with FakeModelServer(model) as server:
+        sd = tmp_path / "state"
+        r1 = _run(_agent(sd, server, "--ask-tool", "tool:flaky_write*"))
+        assert r1.returncode == 3
+
+        assert _run(["approve", "--state-dir", str(sd), "--run-id", "run-1", "--by", "why"]).returncode == 0
+
+        killed = _kill_when(
+            _agent(sd, server, "--ask-tool", "tool:flaky_write*", "--hold-after-write", "flaky_write", "--resume"),
+            _written(sd, "effects_log"),
+        )
+        assert killed == _KILLED
+
+        r2 = _run(_agent(sd, server, "--ask-tool", "tool:flaky_write*", "--resume"))
+        payload = _payload(r2)
+        tool_rows = [r for r in _effects(sd) if ":flaky_write:" in r["key"]]
+
+    assert r2.returncode == 0 and payload["status"] == "completed"
+    assert payload["sink_rows"] == 1 and tool_rows[0]["executions"] == 2
+    assert model.calls == 2

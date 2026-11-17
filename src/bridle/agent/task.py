@@ -141,7 +141,7 @@ def _run_tool_call(ctx: StepContext, raw: dict[str, Any], config: AgentConfig) -
             mismatch_reason: str | None = None
             if approval["tool_name"] != call.name or approval["args_hash"] != args_sha:
                 mismatch_reason = "工具名或参数与批准记录不一致"
-            elif approval["expires_at"] is not None and time.time() > float(approval["expires_at"]):
+            elif approval["expires_at"] is None or time.time() > float(approval["expires_at"]):
                 mismatch_reason = "审批已过期"
             elif approval["policy_version"] != config.policy.version():
                 mismatch_reason = "策略版本已变更，原审批失效"

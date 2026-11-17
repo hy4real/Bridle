@@ -597,7 +597,7 @@ def _cmd_approve(args: argparse.Namespace) -> int:
                 return 1
             run_id = row["run_id"]
         else:
-            run_id = validate_run_id(args.run_id or "run-1")
+            run_id = validate_run_id("run-1" if args.run_id is None else args.run_id)
 
         with run_lock(state_dir, run_id):
             if args.approval_id is not None:

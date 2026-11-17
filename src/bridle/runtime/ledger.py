@@ -551,9 +551,9 @@ class EffectLedger:
         validate_run_id(run_id)
         if not isinstance(step_index, int) or isinstance(step_index, bool) or step_index < 0:
             raise ValueError(f"step_index 必须是非负整数，实际 {step_index!r}")
-        if not tool_call_id:
+        if not isinstance(tool_call_id, str) or not tool_call_id.strip():
             raise ValueError("tool_call_id 不能为空")
-        if not tool_name:
+        if not isinstance(tool_name, str) or not tool_name.strip():
             raise ValueError("tool_name 不能为空")
 
         now = time.time()
@@ -644,9 +644,9 @@ class EffectLedger:
         granted_by: str,
     ) -> dict[str, Any]:
         """把 pending 审批置为 approved，并与 `approval_granted` 事件同事务落盘。"""
-        if not granted_by:
+        if not isinstance(granted_by, str) or not granted_by.strip():
             raise ValueError("granted_by 不能为空：批准必须留下是谁批的")
-        if not math.isfinite(ttl_s) or ttl_s <= 0:
+        if isinstance(ttl_s, bool) or not isinstance(ttl_s, (int, float)) or not math.isfinite(ttl_s) or ttl_s <= 0:
             raise ValueError(f"ttl_s 必须是正有限数，实际 {ttl_s!r}")
         now = time.time()
         expires_at = now + ttl_s
@@ -689,7 +689,7 @@ class EffectLedger:
 
     def revoke(self, approval_id: str, *, reason: str) -> dict[str, Any]:
         """吊销一条待批或已批准的记录，并与 `approval_revoked` 事件同事务落盘。"""
-        if not reason:
+        if not isinstance(reason, str) or not reason.strip():
             raise ValueError("reason 不能为空：吊销必须记录原因")
         now = time.time()
         with self._tx() as conn:

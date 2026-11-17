@@ -285,7 +285,7 @@ uv run harness verify S5.5   # 批准后改 --deny-tool 或 --ttl 0.01 过期 �
 | 项 | 数字 |
 | --- | --- |
 | 规格 | 46 条，全部通过且带证据（`BASELINE`：46 通过 / 0 失败 / 0 未实现） |
-| 单测 | 以 `uv run pytest` 的输出为准（M11 收口时 203 个） |
+| 单测 | 以 `uv run pytest` 的输出为准（M11 收口时 208 个） |
 | 回归集 | 20 例，pass_rate 1.0，跑两遍一致 |
 | runtime | native（默认）+ langgraph（可选） |
 

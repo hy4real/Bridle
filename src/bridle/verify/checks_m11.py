@@ -140,7 +140,9 @@ def check_s55() -> CheckResult:
             row_a = _approvals(dir_a)[0]
             events_a = _approval_events(dir_a)
             sink_a = _sink_rows(dir_a)
-            if row_a["status"] != "revoked" or "approval_revoked" not in events_a or sink_a != 0:
+            if (row_a["status"] != "revoked"
+                    or events_a != ["approval_requested", "approval_granted", "approval_revoked"]
+                    or sink_a != 0):
                 return failed(f"(a) 吊销状态/事件/下游不对：row={row_a} events={events_a} sink={sink_a}")
             if model_a.calls != 1:
                 return failed(f"(a) 不应继续询问模型：calls={model_a.calls}")
@@ -175,7 +177,9 @@ def check_s55() -> CheckResult:
             row_b = _approvals(dir_b)[0]
             events_b = _approval_events(dir_b)
             sink_b = _sink_rows(dir_b)
-            if row_b["status"] != "revoked" or "approval_revoked" not in events_b or sink_b != 0:
+            if (row_b["status"] != "revoked"
+                    or events_b != ["approval_requested", "approval_granted", "approval_revoked"]
+                    or sink_b != 0):
                 return failed(f"(b) 吊销状态/事件/下游不对：row={row_b} events={events_b} sink={sink_b}")
             if model_b.calls != 1:
                 return failed(f"(b) 不应继续询问模型：calls={model_b.calls}")
