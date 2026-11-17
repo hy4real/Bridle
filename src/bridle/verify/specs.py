@@ -1,11 +1,11 @@
-"""44 条规格的登记表。
+"""46 条规格的登记表。
 
 这张表是 `specs/a1-a10-acceptance-specs.md` 的代码镜像。两处必须同步：
 改一处必须改另一处，否则 `harness verify --list` 与文档对不上。
 
 新规格先登记为 `not_implemented`（M0 起的做法）：这是**基线**，不是缺陷。
 每完成一条，把对应的 check 换成真断言，状态列从「未实现」变成「通过/失败」，
-同时改 `BASELINE`。M1–M9 的 44 条已全部通过。
+同时改 `BASELINE`。M1–M9 的 44 条已全部通过；M11（审批记录）的 2 条正在实现中。
 """
 
 from __future__ import annotations
@@ -98,6 +98,10 @@ _spec("S5.2", "A5", "deny 优先于 allow，allow 无法为 deny 开例外",
       "harness verify S5.2", "M2", checks_m2.check_s52)
 _spec("S5.3", "A5", "refusal / finish_reason=length / 内容过滤三条旁路都不写入下游",
       "harness verify S5.3", "M2", checks_m2.check_s53)
+_spec("S5.4", "A5", "审批记录跨进程存活：interrupted 后 approve 再恢复，不重问人直接执行",
+      "harness verify S5.4", "M11")
+_spec("S5.5", "A5", "恢复前校验审批有效性：策略变化或过期则吊销，run 停在 blocked",
+      "harness verify S5.5", "M11")
 
 # A6 成本
 _spec("S6.1", "A6", "归因账本分层：task → session → turn → call → attempt",

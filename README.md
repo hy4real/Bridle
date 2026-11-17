@@ -9,13 +9,13 @@
 
 ```bash
 uv sync --dev
-uv run harness verify --list      # 44 条可验收规格
+uv run harness verify --list      # 46 条可验收规格
 uv run harness verify --all       # 逐条跑；各状态条数与 BASELINE 一致
 uv run harness verify S2.1        # 只跑一条
 ./scripts/ci.sh                   # 单测 + 规格数 + 基线断言
 ```
 
-**当前状态：M9 已交付，44 条规格全部通过。**
+**当前状态：M9 已交付，44 条规格全部通过；M11（审批记录）进行中，2 条新规格逐条实现，当前通过数见 `BASELINE`。**
 通过数记在 `BASELINE` 里，CI 会比对——**想加通过数必须同时改 BASELINE**，
 没人能悄悄让测试变绿。
 
@@ -260,7 +260,7 @@ run 结束才写，崩溃等于这次 run 全丢，和以前一样；LangGraph b
 
 | 项 | 数字 |
 | --- | --- |
-| 规格 | 44 条，全部通过且带证据（`BASELINE`：44 通过 / 0 失败 / 0 未实现） |
+| 规格 | 46 条：M1–M9 的 44 条通过且带证据，M11 的 2 条逐条实现中（见 `BASELINE`） |
 | 单测 | 以 `uv run pytest` 的输出为准（M9 收口时 185 个） |
 | 回归集 | 20 例，pass_rate 1.0，跑两遍一致 |
 | runtime | native（默认）+ langgraph（可选） |
@@ -322,6 +322,7 @@ uv run python scripts/smoke_real_model.py
 | M7 | 副作用判据：`replay` 声明、`unknown` 状态、键作用域、真 SIGKILL 验收 | S2.5–S2.9、S4.4 |
 | M8 | 模型循环：model → tool → model 接进 runtime，恢复不重问模型 | S11.1–S11.5 |
 | M9 | 事件日志：事件是真相，checkpoint 是投影缓存；删掉只写不读的两张表与 `async` 档 | S12.1–S12.3 |
+| M11 | 审批记录：跨进程存活、策略版本校验与过期吊销（进行中） | S5.4–S5.5 |
 
 ## 明确不做
 
