@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sqlite3
 import time
 import uuid
@@ -45,7 +46,7 @@ from ..effects import (
 from .events import EVENTS_SCHEMA, append_event
 from .types import Cancelled
 
-SCHEMA_VERSION = 3  # 3：加了 events 表（M9）
+SCHEMA_VERSION = 4  # 3：加了 events 表（M9）；4：加了 approvals 表（M11）
 
 _SCHEMA_STATEMENTS = (
     """
@@ -74,8 +75,35 @@ _SCHEMA_STATEMENTS = (
         outcome     TEXT
     )
     """,
+    """
+    CREATE TABLE approvals (
+        approval_id    TEXT PRIMARY KEY,
+        run_id         TEXT NOT NULL,
+        step_index     INTEGER NOT NULL,
+        tool_call_id   TEXT NOT NULL,
+        tool_name      TEXT NOT NULL,
+        args_hash      TEXT NOT NULL,
+        policy_version TEXT NOT NULL,
+        reason         TEXT NOT NULL DEFAULT '',
+        status         TEXT NOT NULL,             -- pending | approved | revoked
+        granted_by     TEXT,
+        granted_at     REAL,
+        expires_at     REAL,
+        revoked_reason TEXT,
+        revoked_at     REAL,
+        created_at     REAL NOT NULL,
+        updated_at     REAL NOT NULL,
+        UNIQUE(run_id, step_index, tool_call_id)
+    )
+    """,
     EVENTS_SCHEMA,
 )
+
+
+def hash_args(arguments: dict[str, Any]) -> str:
+    """工具入参的规范 SHA-256，供审批申请与恢复校验对照。"""
+    canonical = json.dumps(arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _effect_event(conn: sqlite3.Connection, key: str, type_: str, **payload: Any) -> None:
@@ -506,3 +534,196 @@ class EffectLedger:
         with self._read() as conn:
             row = conn.execute("SELECT status FROM effects WHERE key = ?", (key,)).fetchone()
         return bool(row and row["status"] == "completed")
+
+    # --- 审批记录（M11）---
+    def request_approval(
+        self,
+        run_id: str,
+        step_index: int,
+        tool_call_id: str,
+        tool_name: str,
+        args_hash: str,
+        policy_version: str,
+        *,
+        reason: str = "",
+    ) -> str:
+        """幂等登记一条待审批记录，并与 `approval_requested` 事件同事务落盘。"""
+        validate_run_id(run_id)
+        if not isinstance(step_index, int) or isinstance(step_index, bool) or step_index < 0:
+            raise ValueError(f"step_index 必须是非负整数，实际 {step_index!r}")
+        if not tool_call_id:
+            raise ValueError("tool_call_id 不能为空")
+        if not tool_name:
+            raise ValueError("tool_name 不能为空")
+
+        now = time.time()
+        with self._tx() as conn:
+            row = conn.execute(
+                """SELECT approval_id, tool_name, args_hash FROM approvals
+                   WHERE run_id = ? AND step_index = ? AND tool_call_id = ?""",
+                (run_id, step_index, tool_call_id),
+            ).fetchone()
+            if row is not None:
+                if row["tool_name"] != tool_name or row["args_hash"] != args_hash:
+                    raise IdempotencyKeyConflict(row["approval_id"])
+                return str(row["approval_id"])
+
+            approval_id = f"apr_{_new_id()}"
+            conn.execute(
+                """INSERT INTO approvals
+                   (approval_id, run_id, step_index, tool_call_id, tool_name, args_hash,
+                    policy_version, reason, status, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (approval_id, run_id, step_index, tool_call_id, tool_name, args_hash,
+                 policy_version, reason, "pending", now, now),
+            )
+            append_event(
+                conn,
+                run_id,
+                "approval_requested",
+                step_index=step_index,
+                payload={
+                    "approval_id": approval_id,
+                    "tool_call_id": tool_call_id,
+                    "tool_name": tool_name,
+                    "args_hash": args_hash,
+                    "policy_version": policy_version,
+                    "reason": reason,
+                },
+            )
+            return approval_id
+
+    def get_approval(
+        self,
+        run_id: str,
+        step_index: int,
+        tool_call_id: str,
+    ) -> dict[str, Any] | None:
+        with self._read() as conn:
+            row = conn.execute(
+                """SELECT * FROM approvals
+                   WHERE run_id = ? AND step_index = ? AND tool_call_id = ?""",
+                (run_id, step_index, tool_call_id),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def get_approval_by_id(self, approval_id: str) -> dict[str, Any] | None:
+        with self._read() as conn:
+            row = conn.execute(
+                "SELECT * FROM approvals WHERE approval_id = ?",
+                (approval_id,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def approvals(
+        self,
+        *,
+        run_id: str | None = None,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM approvals"
+        clauses: list[str] = []
+        params: list[Any] = []
+        if run_id is not None:
+            clauses.append("run_id = ?")
+            params.append(run_id)
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        with self._read() as conn:
+            rows = conn.execute(query + " ORDER BY created_at, rowid", params).fetchall()
+        return [dict(row) for row in rows]
+
+    def approve(
+        self,
+        approval_id: str,
+        *,
+        ttl_s: float = 3600.0,
+        granted_by: str,
+    ) -> dict[str, Any]:
+        """把 pending 审批置为 approved，并与 `approval_granted` 事件同事务落盘。"""
+        if not granted_by:
+            raise ValueError("granted_by 不能为空：批准必须留下是谁批的")
+        if not math.isfinite(ttl_s) or ttl_s <= 0:
+            raise ValueError(f"ttl_s 必须是正有限数，实际 {ttl_s!r}")
+        now = time.time()
+        expires_at = now + ttl_s
+        with self._tx() as conn:
+            row = conn.execute(
+                "SELECT * FROM approvals WHERE approval_id = ?",
+                (approval_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"没有这条审批记录：{approval_id}")
+            if row["status"] != "pending":
+                raise ValueError(f"只有 pending 可以批准，{approval_id} 当前是 {row['status']}")
+            conn.execute(
+                """UPDATE approvals
+                   SET status = 'approved', granted_by = ?, granted_at = ?,
+                       expires_at = ?, updated_at = ?
+                   WHERE approval_id = ? AND status = 'pending'""",
+                (granted_by, now, expires_at, now, approval_id),
+            )
+            append_event(
+                conn,
+                row["run_id"],
+                "approval_granted",
+                step_index=row["step_index"],
+                payload={
+                    "approval_id": approval_id,
+                    "tool_call_id": row["tool_call_id"],
+                    "tool_name": row["tool_name"],
+                    "granted_by": granted_by,
+                    "granted_at": now,
+                    "expires_at": expires_at,
+                    "policy_version": row["policy_version"],
+                },
+            )
+            updated = conn.execute(
+                "SELECT * FROM approvals WHERE approval_id = ?",
+                (approval_id,),
+            ).fetchone()
+        return dict(updated)
+
+    def revoke(self, approval_id: str, *, reason: str) -> dict[str, Any]:
+        """吊销一条待批或已批准的记录，并与 `approval_revoked` 事件同事务落盘。"""
+        if not reason:
+            raise ValueError("reason 不能为空：吊销必须记录原因")
+        now = time.time()
+        with self._tx() as conn:
+            row = conn.execute(
+                "SELECT * FROM approvals WHERE approval_id = ?",
+                (approval_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"没有这条审批记录：{approval_id}")
+            if row["status"] not in ("pending", "approved"):
+                raise ValueError(
+                    f"只有 pending 或 approved 可以吊销，{approval_id} 当前是 {row['status']}"
+                )
+            conn.execute(
+                """UPDATE approvals
+                   SET status = 'revoked', revoked_reason = ?, revoked_at = ?, updated_at = ?
+                   WHERE approval_id = ? AND status IN ('pending', 'approved')""",
+                (reason, now, now, approval_id),
+            )
+            append_event(
+                conn,
+                row["run_id"],
+                "approval_revoked",
+                step_index=row["step_index"],
+                payload={
+                    "approval_id": approval_id,
+                    "tool_call_id": row["tool_call_id"],
+                    "tool_name": row["tool_name"],
+                    "reason": reason,
+                    "revoked_at": now,
+                },
+            )
+            updated = conn.execute(
+                "SELECT * FROM approvals WHERE approval_id = ?",
+                (approval_id,),
+            ).fetchone()
+        return dict(updated)

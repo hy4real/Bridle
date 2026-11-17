@@ -107,3 +107,38 @@ def test_sandbox_disable_env_raises_unless_allowed(monkeypatch: pytest.MonkeyPat
 
 def test_sandbox_mode_default_is_read_only() -> None:
     assert SandboxMode("read-only") is SandboxMode.READ_ONLY
+
+
+def test_policy_version_changes_with_rules_approval_and_sandbox_mode() -> None:
+    base = _engine()
+    same = _engine()
+    assert base.version() == same.version()
+    assert len(base.version()) == 64
+
+    # 改 rule（id / decision / pattern / 顺序 / 增删）均改变版本；仅改 note 不改判定版本
+    diff_pattern = PolicyEngine(rules=CommandRules([
+        Rule("deny-1", Decision.FORBID, "rm -rf /"),
+        Rule("ask-1", Decision.PROMPT, "git push *"),
+        Rule("allow-1", Decision.ALLOW, "ls"),
+    ]))
+    diff_decision = PolicyEngine(rules=CommandRules([
+        Rule("deny-1", Decision.FORBID, "rm -rf *"),
+        Rule("ask-1", Decision.ALLOW, "git push *"),
+        Rule("allow-1", Decision.ALLOW, "ls"),
+    ]))
+    diff_id = PolicyEngine(rules=CommandRules([
+        Rule("deny-x", Decision.FORBID, "rm -rf *"),
+        Rule("ask-1", Decision.PROMPT, "git push *"),
+        Rule("allow-1", Decision.ALLOW, "ls"),
+    ]))
+    diff_note_only = PolicyEngine(rules=CommandRules([
+        Rule("deny-1", Decision.FORBID, "rm -rf *", note="只是注释"),
+        Rule("ask-1", Decision.PROMPT, "git push *"),
+        Rule("allow-1", Decision.ALLOW, "ls"),
+    ]))
+    diff_approval = _engine(approval=ApprovalPolicy.NEVER)
+    diff_sandbox = _engine(sandbox_mode=SandboxMode.WORKSPACE_WRITE)
+
+    assert base.version() == diff_note_only.version()
+    for variant in (diff_pattern, diff_decision, diff_id, diff_approval, diff_sandbox):
+        assert variant.version() != base.version()

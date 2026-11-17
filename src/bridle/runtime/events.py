@@ -1,12 +1,13 @@
 """事件日志：append-only，按 run 单调编号。它是真相，checkpoint 只是由它算出来的缓存。
 
-两类事件写在同一张表里（`ledger.sqlite` 的 `events`），共用一个 `seq` 序列：
+三类事件写在同一张表里（`ledger.sqlite` 的 `events`），共用一个 `seq` 序列：
 
 run 级（runtime 写）    run_started / step_committed / run_stopped / run_resumed /
                         run_finished / projection_repaired
 副作用级（账本写）      effect_intent / effect_outcome / effect_resolved
+审批级（账本写）        approval_requested / approval_granted / approval_revoked
 
-副作用事件与账本行在**同一个事务**里写：要么都在，要么都不在。
+副作用与审批事件均与对应账本行在**同一个事务**里写：要么都在，要么都不在。
 `step_committed` 是一步的提交点——它写进去了，这一步就算做完了，恢复时不再重跑；
 checkpoint 缓存写没写成都不影响这一点。
 
@@ -30,6 +31,7 @@ from contextlib import contextmanager
 RUN_EVENTS = frozenset({"run_started", "step_committed", "run_stopped", "run_resumed",
                         "run_finished", "projection_repaired"})
 EFFECT_EVENTS = frozenset({"effect_intent", "effect_outcome", "effect_resolved"})
+APPROVAL_EVENTS = frozenset({"approval_requested", "approval_granted", "approval_revoked"})
 
 EVENTS_SCHEMA = """
     CREATE TABLE events (
@@ -113,7 +115,7 @@ def project(events: list[Event]) -> tuple[dict[str, Any] | None, int]:
             state["status"] = "running"
         elif event.type == "run_finished":
             state["status"] = "completed"
-        # projection_repaired 与 effect_* 不改变 run 的状态
+        # projection_repaired、effect_* 与 approval_* 不改变 run 的状态
     return state, last_seq
 
 
@@ -130,7 +132,7 @@ def append_event(
 
     seq 在 `BEGIN IMMEDIATE` 的写锁之内分配，所以多个写者（runtime、账本）不会撞号。
     """
-    if type_ not in RUN_EVENTS | EFFECT_EVENTS:
+    if type_ not in RUN_EVENTS | EFFECT_EVENTS | APPROVAL_EVENTS:
         raise ValueError(f"未知的事件类型：{type_}")
     seq = conn.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE run_id = ?",
                        (run_id,)).fetchone()[0]

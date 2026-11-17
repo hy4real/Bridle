@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+
 from .rules import CommandRules
 from .types import ApprovalPolicy, Decision, PolicyVerdict, SandboxMode
 
@@ -17,6 +20,19 @@ class PolicyEngine:
         self.rules = rules or CommandRules()
         self.approval = approval
         self.sandbox_mode = sandbox_mode
+
+    def version(self) -> str:
+        """策略快照的规范 SHA-256：(rules[id,decision,pattern], approval, sandbox_mode)。"""
+        payload = {
+            "rules": [
+                {"id": rule.id, "decision": rule.decision.value, "pattern": rule.pattern}
+                for rule in self.rules.rules
+            ],
+            "approval": self.approval.value,
+            "sandbox_mode": self.sandbox_mode.value,
+        }
+        canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     def decide(self, command: str) -> PolicyVerdict:
         deny = self.rules.first_match(command, Decision.FORBID)

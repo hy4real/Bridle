@@ -72,6 +72,15 @@ class EffectOutcomeUnknown(RuntimeError):
         self.reason = reason
 
 
+class ApprovalRevoked(RuntimeError):
+    """已有审批记录失效（策略变化、过期或已吊销）。不再自动重问或放行，停在 blocked。"""
+
+    def __init__(self, key: str, reason: str) -> None:
+        super().__init__(f"{key}: {reason}")
+        self.key = key
+        self.reason = reason
+
+
 class IdempotencyKeyConflict(RuntimeError):
     """同一个幂等键配了不同的意图。返回旧结果会答非所问，所以直接报错。"""
 

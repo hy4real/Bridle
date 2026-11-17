@@ -10,7 +10,14 @@ import pytest
 from bridle.effects import Replay, StateVersionMismatch, scoped_key
 from bridle.runtime import EffectLedger
 from bridle.runtime import ledger as ledger_module
-from bridle.runtime.events import Event, EventLog, apply_delta, compute_delta, project
+from bridle.runtime.events import (
+    APPROVAL_EVENTS,
+    Event,
+    EventLog,
+    apply_delta,
+    compute_delta,
+    project,
+)
 
 
 # --- 增量 -----------------------------------------------------------------
@@ -131,3 +138,32 @@ def test_version_2_ledger_is_rejected(tmp_path: Path) -> None:
     raw.close()
     with pytest.raises(StateVersionMismatch):
         EffectLedger(tmp_path)
+
+
+def test_version_3_ledger_is_rejected(tmp_path: Path) -> None:
+    raw = sqlite3.connect(tmp_path / "ledger.sqlite")
+    raw.execute("CREATE TABLE effects (key TEXT PRIMARY KEY)")
+    raw.execute("CREATE TABLE effect_attempts (attempt_id TEXT PRIMARY KEY)")
+    raw.execute("CREATE TABLE events (run_id TEXT NOT NULL, seq INTEGER NOT NULL)")
+    raw.execute("PRAGMA user_version = 3")
+    raw.commit()
+    raw.close()
+    with pytest.raises(StateVersionMismatch):
+        EffectLedger(tmp_path)
+
+
+def test_approval_events_are_accepted_and_do_not_mutate_projected_state(tmp_path: Path) -> None:
+    assert APPROVAL_EVENTS == frozenset({"approval_requested", "approval_granted", "approval_revoked"})
+    ledger = EffectLedger(tmp_path)
+    log = EventLog(ledger.db_path)
+    log.append("r1", "run_started", payload={"state": {"step_index": 0, "status": "running"}})
+    for ev_type in ("approval_requested", "approval_granted", "approval_revoked"):
+        log.append("r1", ev_type, step_index=1, payload={"approval_id": "apr_1"})
+
+    events = log.read("r1")
+    assert [e.type for e in events] == [
+        "run_started", "approval_requested", "approval_granted", "approval_revoked"
+    ]
+    state, last_seq = project(events)
+    assert state == {"step_index": 0, "status": "running"}
+    assert last_seq == 4
