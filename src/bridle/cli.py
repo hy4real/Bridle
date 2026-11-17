@@ -86,10 +86,17 @@ def _cmd_verify(args: argparse.Namespace) -> int:
 def _cmd_run(args: argparse.Namespace) -> int:
     state_dir = Path(args.state_dir)
     replay = Replay(args.effect_replay)
-    if args.runtime == "langgraph" and (replay is Replay.UNSAFE or args.hold):
-        # langgraph backend 不跟进 M7 的语义（blocked / unknown）。悄悄降级比报错危险。
+    if args.runtime == "langgraph" and (replay is Replay.UNSAFE or args.hold
+                                        or args.hold_after_commit is not None):
+        # langgraph backend 不跟进 M7/M9 的语义（blocked / unknown / 事件日志）。悄悄降级比报错危险。
         print(json.dumps({"code": "UNSUPPORTED_ON_LANGGRAPH",
-                          "error": "--effect-replay unsafe 与 --hold 只支持 native runtime"},
+                          "error": "--effect-replay unsafe、--hold 与 --hold-after-commit 只支持 native runtime"},
+                         ensure_ascii=False))
+        return 2
+    if args.hold_after_commit is not None and args.durability != Durability.SYNC.value:
+        # exit 档把事件攒到 run 结束才写，「事件已提交、缓存未写」这个窗口不存在
+        print(json.dumps({"code": "UNSUPPORTED_DURABILITY",
+                          "error": "--hold-after-commit 只在 --durability sync 下有意义"},
                          ensure_ascii=False))
         return 2
     cancel = CancelToken()
@@ -116,6 +123,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 task, state_dir, run_id=args.run_id, durability=Durability(args.durability),
                 cancel=cancel, tool_delay=args.tool_delay,
                 crash_after_step=args.crash_after_step,
+                hold_after_commit=args.hold_after_commit,
             )
         report = runtime.run(resume=args.resume)
     except RunAlreadyExists as error:
@@ -613,6 +621,9 @@ def build_parser() -> argparse.ArgumentParser:
                      help="验收用：停在写下游之前/之后等着被 SIGKILL（30 秒后自行退出）")
     run.add_argument("--crash-after-step", type=int, default=None,
                      help="在第 N 步执行完、checkpoint 写盘前直接 os._exit(137)（复现最危险的窗口）")
+    run.add_argument("--hold-after-commit", type=int, default=None, metavar="N",
+                     help="验收用：第 N 步的 step_committed 事件写入后、缓存写入前停住等着被 SIGKILL"
+                          "（30 秒后自行退出）")
     run.set_defaults(func=_cmd_run)
 
     for name, func, help_text in (

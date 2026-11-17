@@ -155,7 +155,7 @@ _spec("S12.1", "A12", "投影可自检：由事件重算的状态与 checkpoint 
 _spec("S12.2", "A12", "缓存被改坏时以日志为准：自检报不一致，恢复后修复并留下记录",
       "harness verify S12.2", "M9", checks_m9.check_s122)
 _spec("S12.3", "A12", "崩在「事件已提交、缓存未写」之间：恢复不重跑已提交的步",
-      "harness verify S12.3", "M9")
+      "harness verify S12.3", "M9", checks_m9.check_s123)
 
 SPECS: tuple[Spec, ...] = tuple(_SPECS)
 
