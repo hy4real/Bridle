@@ -9,7 +9,8 @@ M8: agent（模型循环：model → tool → model，跑在 native runtime 上�
 M9: log verify（由事件日志重算 state，与 checkpoint 缓存比对）
 M11: approve（批准待审批的工具调用）
 
-退出码：0 完成；3 中断；4 副作用结果未知或审批失效（run 停在 blocked）；6 run id 已存在；
+退出码：0 完成；3 中断；4 副作用结果未知或审批失效（run 停在 blocked）；
+5 重启上限耗尽（run 熔断为 faulted）；6 run id 已存在；
 7 run 被另一个进程持有；8 幂等键冲突；12 策略拒绝；13 沙箱不可用；14 结构化输出中止；
 21 工具协议失败；130 取消。
 """
@@ -50,6 +51,7 @@ from .verify import runner, specs
 from .verify.registry import Status
 
 EXIT_OUTCOME_UNKNOWN = 4
+EXIT_FAULTED = 5
 EXIT_RUN_EXISTS = 6
 EXIT_RUN_LOCKED = 7
 EXIT_KEY_CONFLICT = 8
@@ -62,6 +64,7 @@ _EXIT_BY_STATUS = {
     RunStatus.COMPLETED: 0,
     RunStatus.INTERRUPTED: 3,
     RunStatus.BLOCKED: EXIT_OUTCOME_UNKNOWN,
+    RunStatus.FAULTED: EXIT_FAULTED,
     RunStatus.FAILED: 1,
     RunStatus.CANCELLED: 130,
 }
@@ -85,6 +88,9 @@ def _cmd_verify(args: argparse.Namespace) -> int:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
+    if args.restart_limit < 1:
+        print(json.dumps({"code": "BAD_CONFIG", "error": "restart_limit 至少为 1"}, ensure_ascii=False))
+        return 2
     state_dir = Path(args.state_dir)
     replay = Replay(args.effect_replay)
     if args.runtime == "langgraph" and (replay is Replay.UNSAFE or args.hold
@@ -125,6 +131,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 cancel=cancel, tool_delay=args.tool_delay,
                 crash_after_step=args.crash_after_step,
                 hold_after_commit=args.hold_after_commit,
+                restart_limit=args.restart_limit,
             )
         report = runtime.run(resume=args.resume)
     except RunAlreadyExists as error:
@@ -207,6 +214,9 @@ def _agent_tools(state_dir: Path, names: list[str] | None, *, hold_after_write: 
 
 
 def _cmd_agent(args: argparse.Namespace) -> int:
+    if args.restart_limit < 1:
+        print(json.dumps({"code": "BAD_CONFIG", "error": "restart_limit 至少为 1"}, ensure_ascii=False))
+        return 2
     from .agent.task import AgentConfig, build_agent_task
     from .model.gateway import ModelGateway
 
@@ -258,7 +268,8 @@ def _cmd_agent(args: argparse.Namespace) -> int:
     previous = signal.signal(signal.SIGINT, lambda signum, frame: cancel.cancel())
     try:
         runtime = AgentRuntime(task, state_dir,
-                               run_id=args.run_id, cancel=cancel)
+                               run_id=args.run_id, cancel=cancel,
+                               restart_limit=args.restart_limit)
         report = runtime.run(resume=args.resume)
     except RunAlreadyExists as error:
         print(json.dumps({"code": "RUN_ALREADY_EXISTS", "run_id": error.run_id,
@@ -713,6 +724,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--hold-after-commit", type=int, default=None, metavar="N",
                      help="验收用：第 N 步的 step_committed 事件写入后、缓存写入前停住等着被 SIGKILL"
                           "（30 秒后自行退出）")
+    run.add_argument("--restart-limit", type=int, default=5,
+                     help="无新提交时允许连续恢复的上限（默认 5），达到后熔断为 faulted")
     run.set_defaults(func=_cmd_run)
 
     for name, func, help_text in (
@@ -804,6 +817,8 @@ def build_parser() -> argparse.ArgumentParser:
                        help="从这个环境变量读 API key（只打印变量名与长度）。本地假模型不需要")
     agent.add_argument("--hold-after-write", default=None, metavar="TOOL",
                        help="验收用：这个工具写完下游后停住，等着被 SIGKILL（30 秒后自行退出）")
+    agent.add_argument("--restart-limit", type=int, default=5,
+                       help="无新提交时允许连续恢复的上限（默认 5），达到后熔断为 faulted")
     agent.set_defaults(func=_cmd_agent)
 
     log = sub.add_parser("log", help="事件日志（M9）")

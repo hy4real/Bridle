@@ -15,7 +15,7 @@ uv run harness verify S2.1        # 只跑一条
 ./scripts/ci.sh                   # 单测 + 规格数 + 基线断言
 ```
 
-**当前状态：M12 已交付，48 条规格全部通过；M10（重启上限）进行中，1 条新规格实现中，当前通过数见 `BASELINE`。**
+**当前状态：M10 已交付，49 条规格全部通过。**
 通过数记在 `BASELINE` 里，CI 会比对——**想加通过数必须同时改 BASELINE**，
 没人能悄悄让测试变绿。
 
@@ -304,12 +304,33 @@ uv run harness verify S3.5   # 二次压缩请求正文包含第一次摘要，�
 边界：OpenAI 兼容接口没有「关闭 prompt-cache 写入」的请求开关，只记录取舍而不实现；本轮不做摘要质量评测；
 LangGraph backend 不跟进切点摘要与 `"summary"` 事件。
 
+## M10 做了什么：重启上限（毒丸保护）
+
+一个在某一步上确定性崩溃（或反复恢复却毫无推进）的任务被称为「毒丸」。M10 在 `AgentRuntime` 上接入
+重启上限（默认 `restart_limit=5`，可用 `--restart-limit N` 覆盖），完全由 `events` 表推导，
+不给 `events` 或 `ledger` 加新表或新列。
+
+```bash
+uv run harness run --state-dir /tmp/rl --crash-after-step 0 --restart-limit 3
+uv run harness verify S12.4   # 连续恢复 5 次无新提交 → 第 6 次 exit 5 (faulted) → 第 7 次不新增事件；新提交后归零
+```
+
+| 决定 | 证据 |
+| --- | --- |
+| 计数纯函数只看最近一次提交之后 | `restarts_since_commit(events)` 统计 `seq > max(step_committed.seq, default=0)` 之后的 `"run_resumed"` 事件数；只有提交新步骤才会清零 |
+| 熔断发生在发射 `run_resumed` 之前 | `loop.py` 在投影修复后、`run_resumed` 之前检查计数：达到上限调 `_stop(..., RunStatus.FAULTED)` 落 `run_stopped(faulted)` 与 `kind="faulted"` 缓存（退出码 5），不执行任何步骤 |
+| `faulted` 是终态，重复恢复幂等 | 已处于 `faulted` 的 run 再次 `--resume` 直接返回 `RunStatus.FAULTED` 并保留原 `error`，不重复写 `run_resumed` 或 `run_stopped` |
+| 未解除的 `blocked` / `interrupted` 同样计数 | 未先 `effect resolve` 或 `harness approve` 就反复 `--resume`，同样累计重启计数直至熔断（`tests/test_restart_limit.py`） |
+
+边界：仓库里没有自动重启的 supervisor，`--resume` 是手动命令；`faulted` 后不会自动清除或重试；
+LangGraph backend 不跟进 `--restart-limit` 与 `faulted`。
+
 ## 收口状态
 
 | 项 | 数字 |
 | --- | --- |
-| 规格 | 49 条：M1–M9、M11–M12 的 48 条通过且带证据，M10 的 1 条实现中（见 `BASELINE`） |
-| 单测 | 以 `uv run pytest` 的输出为准（M12 收口时 225 个） |
+| 规格 | 49 条，全部通过且带证据（`BASELINE`：49 通过 / 0 失败 / 0 未实现） |
+| 单测 | 以 `uv run pytest` 的输出为准（M10 收口时 233 个） |
 | 回归集 | 20 例，pass_rate 1.0，跑两遍一致 |
 | runtime | native（默认）+ langgraph（可选） |
 
@@ -372,7 +393,7 @@ uv run python scripts/smoke_real_model.py
 | M9 | 事件日志：事件是真相，checkpoint 是投影缓存；删掉只写不读的两张表与 `async` 档 | S12.1–S12.3 |
 | M11 | 审批记录：跨进程存活、策略版本校验与过期吊销 | S5.4–S5.5 |
 | M12 | 切点摘要：append-only 原文 + `"summary"` 事件 + 从事件重算切点 | S3.4–S3.5 |
-| M10 | 重启上限（毒丸保护）：无新提交连续恢复达上限判 `faulted`，新提交后清零（进行中） | S12.4 |
+| M10 | 重启上限（毒丸保护）：无新提交连续恢复达上限判 `faulted`，新提交后清零 | S12.4 |
 
 ## 明确不做
 

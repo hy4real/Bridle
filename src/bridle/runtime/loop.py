@@ -34,7 +34,7 @@ from typing import Any
 
 from ..effects import ApprovalRevoked, EffectOutcomeUnknown, RunAlreadyExists, validate_run_id
 from .checkpointer import Checkpointer
-from .events import EventLog, compute_delta, project
+from .events import Event, EventLog, compute_delta, project, restarts_since_commit
 from .ledger import EffectLedger
 from .lock import run_lock
 from .types import (
@@ -62,6 +62,13 @@ def mismatched_keys(cache: dict[str, Any] | None, projection: dict[str, Any] | N
     return sorted(k for k in set(cache) | set(projection) if cache.get(k) != projection.get(k))
 
 
+def _last_faulted_error(events: list[Event]) -> str | None:
+    for event in reversed(events):
+        if event.type == "run_stopped" and event.payload.get("status") == RunStatus.FAULTED.value:
+            return event.payload.get("error")
+    return None
+
+
 class AgentRuntime:
     def __init__(
         self,
@@ -74,7 +81,10 @@ class AgentRuntime:
         tool_delay: float = 0.0,
         crash_after_step: int | None = None,
         hold_after_commit: int | None = None,
+        restart_limit: int = 5,
     ) -> None:
+        if isinstance(restart_limit, bool) or not isinstance(restart_limit, int) or restart_limit < 1:
+            raise ValueError(f"restart_limit 必须是正整数，实际 {restart_limit!r}")
         self.task = task
         self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -84,6 +94,7 @@ class AgentRuntime:
         self.tool_delay = tool_delay
         self.crash_after_step = crash_after_step
         self.hold_after_commit = hold_after_commit
+        self.restart_limit = restart_limit
         self.checkpointer = Checkpointer(self.state_dir)
         self.ledger = EffectLedger(self.state_dir)
         self.events = EventLog(self.ledger.db_path)
@@ -129,7 +140,8 @@ class AgentRuntime:
 
     def _run(self, *, resume: bool) -> RunReport:
         report = RunReport(run_id=self.run_id, status=RunStatus.RUNNING)
-        projection, last_seq = project(self.events.read(self.run_id))
+        events = self.events.read(self.run_id)
+        projection, last_seq = project(events)
 
         if not resume:
             if projection is not None:
@@ -157,6 +169,23 @@ class AgentRuntime:
                 report.status = RunStatus.COMPLETED
                 report.steps_run = list(state.get("steps_done", []))
                 return report
+            if state.get("status") == RunStatus.FAULTED.value:
+                report.status = RunStatus.FAULTED
+                report.steps_run = list(state.get("steps_done", []))
+                report.error = _last_faulted_error(events)
+                return report
+            restarts = restarts_since_commit(events)
+            if restarts >= self.restart_limit:
+                return self._stop(
+                    report,
+                    state,
+                    parent,
+                    RunStatus.FAULTED,
+                    error=(
+                        f"重启上限已耗尽：自上次提交后已恢复 {restarts} 次"
+                        f"（restart_limit={self.restart_limit}），已熔断为 faulted"
+                    ),
+                )
             state["status"] = RunStatus.RUNNING.value
             self._emit("run_resumed", payload={"from_step": state["step_index"]})
 

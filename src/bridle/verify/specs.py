@@ -5,7 +5,7 @@
 
 新规格先登记为 `not_implemented`（M0 起的做法）：这是**基线**，不是缺陷。
 每完成一条，把对应的 check 换成真断言，状态列从「未实现」变成「通过/失败」，
-同时改 `BASELINE`。M1–M9、M11、M12 的 48 条已全部通过；M10（重启上限）的 1 条正在实现中。
+同时改 `BASELINE`。M1–M12 的 49 条已全部通过。
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from . import (
     checks_m7,
     checks_m8,
     checks_m9,
+    checks_m10,
     checks_m11,
     checks_m12,
 )
@@ -167,7 +168,7 @@ _spec("S12.2", "A12", "缓存被改坏时以日志为准：自检报不一致，
 _spec("S12.3", "A12", "崩在「事件已提交、缓存未写」之间：恢复不重跑已提交的步",
       "harness verify S12.3", "M9", checks_m9.check_s123)
 _spec("S12.4", "A12", "重启上限（毒丸保护）：连续恢复无新提交达上限判 faulted；新提交后清零",
-      "harness verify S12.4", "M10")
+      "harness verify S12.4", "M10", checks_m10.check_s124)
 
 SPECS: tuple[Spec, ...] = tuple(_SPECS)
 
