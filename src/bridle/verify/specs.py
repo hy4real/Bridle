@@ -1,11 +1,11 @@
-"""46 条规格的登记表。
+"""48 条规格的登记表。
 
 这张表是 `specs/a1-a10-acceptance-specs.md` 的代码镜像。两处必须同步：
 改一处必须改另一处，否则 `harness verify --list` 与文档对不上。
 
 新规格先登记为 `not_implemented`（M0 起的做法）：这是**基线**，不是缺陷。
 每完成一条，把对应的 check 换成真断言，状态列从「未实现」变成「通过/失败」，
-同时改 `BASELINE`。M1–M9、M11 的 46 条已全部通过。
+同时改 `BASELINE`。M1–M9、M11 的 46 条已全部通过；M12（切点摘要）的 2 条正在实现中。
 """
 
 from __future__ import annotations
@@ -81,6 +81,10 @@ _spec("S3.2", "A3", "前缀字节稳定（连续两轮前缀 hash 相同），sy
       "harness verify S3.2", "M4", checks_m4.check_s32)
 _spec("S3.3", "A3", "token 报告区分 input / output / cache_read / cache_write，且子集关系成立",
       "harness verify S3.3", "M4", checks_m4.check_s33)
+_spec("S3.4", "A3", "切点摘要保留原文：循环超预算压缩后送模 token 受控，事件日志与 state 原文不删且可重算切点",
+      "harness verify S3.4", "M12")
+_spec("S3.5", "A3", "二次压缩以旧摘要为输入：第二次摘要请求包含第一次摘要文本，原文仍保留",
+      "harness verify S3.5", "M12")
 
 # A4 工具层
 _spec("S4.1", "A4", "工具定义有 token 预算：60 个工具时注入的是 top-k 而不是全量",
