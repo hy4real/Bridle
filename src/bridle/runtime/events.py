@@ -123,6 +123,21 @@ def project(events: list[Event]) -> tuple[dict[str, Any] | None, int]:
     return state, last_seq
 
 
+def restarts_since_commit(events: list[Event]) -> int:
+    """统计最近一次 `step_committed` 之后发生的 `run_resumed` 次数。
+
+    没有过 `step_committed` 时以 seq=0 为界，统计所有 `run_resumed`。
+    只从事件日志重算，不额外存计数表或列。
+    """
+    last_commit_seq = max(
+        (event.seq for event in events if event.type == "step_committed"),
+        default=0,
+    )
+    return sum(
+        1 for event in events if event.type == "run_resumed" and event.seq > last_commit_seq
+    )
+
+
 # --- 写 -------------------------------------------------------------------
 def append_event(
     conn: sqlite3.Connection,

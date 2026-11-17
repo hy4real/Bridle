@@ -31,6 +31,7 @@ class RunStatus(str, Enum):
     CRASHED = "crashed"
     BLOCKED = "blocked"  # 副作用结果未知（等人 resolve）或审批失效/吊销
     FAILED = "failed"    # 任务自己判定无法继续（模型不可用、步数用尽）；重试没有意义
+    FAULTED = "faulted"  # 重启上限耗尽（毒丸保护）：连续恢复无新提交达到上限
 
 
 class RunFailed(Exception):

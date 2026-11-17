@@ -9,13 +9,13 @@
 
 ```bash
 uv sync --dev
-uv run harness verify --list      # 48 条可验收规格
+uv run harness verify --list      # 49 条可验收规格
 uv run harness verify --all       # 逐条跑；各状态条数与 BASELINE 一致
 uv run harness verify S2.1        # 只跑一条
 ./scripts/ci.sh                   # 单测 + 规格数 + 基线断言
 ```
 
-**当前状态：M12 已交付，48 条规格全部通过。**
+**当前状态：M12 已交付，48 条规格全部通过；M10（重启上限）进行中，1 条新规格实现中，当前通过数见 `BASELINE`。**
 通过数记在 `BASELINE` 里，CI 会比对——**想加通过数必须同时改 BASELINE**，
 没人能悄悄让测试变绿。
 
@@ -308,7 +308,7 @@ LangGraph backend 不跟进切点摘要与 `"summary"` 事件。
 
 | 项 | 数字 |
 | --- | --- |
-| 规格 | 48 条，全部通过且带证据（`BASELINE`：48 通过 / 0 失败 / 0 未实现） |
+| 规格 | 49 条：M1–M9、M11–M12 的 48 条通过且带证据，M10 的 1 条实现中（见 `BASELINE`） |
 | 单测 | 以 `uv run pytest` 的输出为准（M12 收口时 225 个） |
 | 回归集 | 20 例，pass_rate 1.0，跑两遍一致 |
 | runtime | native（默认）+ langgraph（可选） |
@@ -372,6 +372,7 @@ uv run python scripts/smoke_real_model.py
 | M9 | 事件日志：事件是真相，checkpoint 是投影缓存；删掉只写不读的两张表与 `async` 档 | S12.1–S12.3 |
 | M11 | 审批记录：跨进程存活、策略版本校验与过期吊销 | S5.4–S5.5 |
 | M12 | 切点摘要：append-only 原文 + `"summary"` 事件 + 从事件重算切点 | S3.4–S3.5 |
+| M10 | 重启上限（毒丸保护）：无新提交连续恢复达上限判 `faulted`，新提交后清零（进行中） | S12.4 |
 
 ## 明确不做
 

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from bridle.effects import Replay, StateVersionMismatch, scoped_key
-from bridle.runtime import EffectLedger
+from bridle.runtime import EffectLedger, RunStatus
 from bridle.runtime import ledger as ledger_module
 from bridle.runtime.events import (
     APPROVAL_EVENTS,
@@ -17,6 +17,7 @@ from bridle.runtime.events import (
     apply_delta,
     compute_delta,
     project,
+    restarts_since_commit,
 )
 
 
@@ -205,3 +206,36 @@ def test_append_many_rolls_back_atomically_if_summary_write_fails(tmp_path: Path
 
     events = log.read("r1")
     assert [e.type for e in events] == ["run_started"]
+
+
+# --- M10.1：状态与重启计数纯函数 -------------------------------------------
+def test_run_status_includes_faulted() -> None:
+    assert RunStatus.FAULTED.value == "faulted"
+
+
+def test_restarts_since_commit_counts_and_resets() -> None:
+    assert restarts_since_commit([]) == 0
+    assert restarts_since_commit([
+        _ev(1, "run_started", {"state": {"step_index": 0}}),
+        _ev(2, "run_stopped", {"status": "blocked"}),
+        _ev(3, "effect_intent", {"key": "r:0:k"}),
+        _ev(4, "projection_repaired", {}),
+    ]) == 0
+
+    five_restarts = [
+        _ev(1, "run_started", {"state": {"step_index": 0}}),
+        _ev(2, "run_resumed"),
+        _ev(3, "run_resumed"),
+        _ev(4, "run_resumed"),
+        _ev(5, "run_resumed"),
+        _ev(6, "run_resumed"),
+    ]
+    assert restarts_since_commit(five_restarts) == 5
+
+    # 提交一次 step_committed 后归零；之后再恢复 1 次返回 1（即使传入列表乱序也按 seq 界定）
+    committed_only = five_restarts + [_ev(7, "step_committed", {"delta": {}})]
+    assert restarts_since_commit(committed_only) == 0
+
+    after_commit_plus_one = committed_only + [_ev(8, "run_resumed")]
+    assert restarts_since_commit(after_commit_plus_one) == 1
+    assert restarts_since_commit(list(reversed(after_commit_plus_one))) == 1
