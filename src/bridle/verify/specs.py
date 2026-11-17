@@ -1,11 +1,11 @@
-"""41 条规格的登记表。
+"""44 条规格的登记表。
 
 这张表是 `specs/a1-a10-acceptance-specs.md` 的代码镜像。两处必须同步：
 改一处必须改另一处，否则 `harness verify --list` 与文档对不上。
 
 新规格先登记为 `not_implemented`（M0 起的做法）：这是**基线**，不是缺陷。
 每完成一条，把对应的 check 换成真断言，状态列从「未实现」变成「通过/失败」，
-同时改 `BASELINE`。M1–M8 的 41 条已全部通过。
+同时改 `BASELINE`。M1–M8 的 41 条已全部通过；M9（事件日志）的 3 条见 A12。
 """
 
 from __future__ import annotations
@@ -147,6 +147,14 @@ _spec("S11.4", "A11", "策略拒绝的工具调用不执行，拒绝原因作为
       "harness verify S11.4", "M8", checks_m8.check_s114)
 _spec("S11.5", "A11", "步数上限：模型一直要工具时，到上限判失败，不无限循环",
       "harness verify S11.5", "M8", checks_m8.check_s115)
+
+# A12 事件日志（M9）：append-only 的事件是真相，checkpoint 是可以重算的投影缓存
+_spec("S12.1", "A12", "投影可自检：由事件重算的状态与 checkpoint 缓存一致",
+      "harness verify S12.1", "M9")
+_spec("S12.2", "A12", "缓存被改坏时以日志为准：自检报不一致，恢复后修复并留下记录",
+      "harness verify S12.2", "M9")
+_spec("S12.3", "A12", "崩在「事件已提交、缓存未写」之间：恢复不重跑已提交的步",
+      "harness verify S12.3", "M9")
 
 SPECS: tuple[Spec, ...] = tuple(_SPECS)
 

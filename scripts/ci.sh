@@ -6,9 +6,9 @@ cd "$(dirname "$0")/.."
 echo "== 1/3 单测 =="
 uv run pytest
 
-echo "== 2/3 规格清单（应为 41 条）=="
+echo "== 2/3 规格清单（应为 44 条）=="
 count=$(uv run harness verify --list --count)
-[ "$count" = "41" ] || { echo "规格数不是 41，实际 $count"; exit 1; }
+[ "$count" = "44" ] || { echo "规格数不是 44，实际 $count"; exit 1; }
 echo "规格数 $count OK"
 
 echo "== 3/3 基线：不许有「失败」，通过数必须等于预期 =="
