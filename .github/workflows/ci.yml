@@ -5,7 +5,7 @@ jobs:
     # 沙箱后端是 macOS Seatbelt（/usr/bin/sandbox-exec），S1.1、S1.2 等规格只能在 macOS 上跑
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       - run: uv sync --dev
       - run: ./scripts/ci.sh

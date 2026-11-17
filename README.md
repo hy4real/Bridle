@@ -15,7 +15,7 @@ uv run harness verify S2.1        # 只跑一条
 ./scripts/ci.sh                   # 单测 + 规格数 + 基线断言
 ```
 
-**当前状态：M9 已交付，44 条规格全部通过；M11（审批记录）进行中，2 条新规格逐条实现，当前通过数见 `BASELINE`。**
+**当前状态：M11 已交付，46 条规格全部通过。**
 通过数记在 `BASELINE` 里，CI 会比对——**想加通过数必须同时改 BASELINE**，
 没人能悄悄让测试变绿。
 
@@ -256,12 +256,36 @@ uv run harness verify S12.3   # step_committed 写入后、缓存写入前被真
 run 结束才写，崩溃等于这次 run 全丢，和以前一样；LangGraph backend 不写事件；持久性仍只到
 「进程被杀」，不承诺断电。
 
+## M11 做了什么：审批记录
+
+M8 里命中 `--ask-tool` 会让 run 停在 `interrupted`，但审批本身没有落盘——进程退出后再恢复，
+还是要再问一次人。M11 在 `ledger.sqlite`（结构版本 3 → 4）里加了 `approvals` 表和三条审批事件
+（`approval_requested`、`approval_granted`、`approval_revoked`），让审批记录跨进程存活，
+并在恢复执行工具前重校验有效性与策略版本。
+
+```bash
+uv run harness approve --state-dir /tmp/ap --run-id run-1 --ttl 3600 --by why
+uv run harness verify S5.4   # --ask-tool 中断（rc 3）→ approve（rc 0）→ --resume 完成（rc 0）
+uv run harness verify S5.5   # 批准后改 --deny-tool 或 --ttl 0.01 过期 → 吊销并停在 blocked（rc 4）
+```
+
+| 决定 | 证据 |
+| --- | --- |
+| 策略版本覆盖影响判定的三项 | `PolicyEngine.version()` 对 `(rules[id,decision,pattern], approval, sandbox_mode)` 规范 JSON 做 SHA-256；`harness agent` 补齐 `--sandbox-mode` |
+| 执行前**先查审批、再跑 `decide()`** | 防止批准后改成 `--deny-tool` 被 `decide()` 吞成 `POLICY_DENIED` 继续跑完，也防止删掉 `--ask-tool` 后绕过吊销 |
+| 失效即吊销并停在 `blocked` | `tool_name / args_hash`、TTL、`policy_version` 任一不符，同事务写 `revoked` + `approval_revoked` 并抛 `ApprovalRevoked`（退出码 4，`blocked_on=approval_id`） |
+| 审批事件与 `approvals` 行同事务 | `request_approval` 按 `(run_id, step_index, tool_call_id)` 幂等；`harness approve` 持有 `run_lock`（被占用退出码 7） |
+| 工具崩溃重跑不重问人 | 有效 `approved` 跳过 `NodeInterrupt`，工具步崩溃后再次 `--resume` 直接重跑工具（`tests/test_approvals.py`） |
+
+边界：单用户本机原型，按单条待批调用授权，不做 Agent Identity / Credential 管理或跨会话通配授权；
+`revoked` 记录不可再用 `harness approve` 复活；LangGraph backend 不跟进这套审批记录。
+
 ## 收口状态
 
 | 项 | 数字 |
 | --- | --- |
-| 规格 | 46 条：M1–M9 的 44 条通过且带证据，M11 的 2 条逐条实现中（见 `BASELINE`） |
-| 单测 | 以 `uv run pytest` 的输出为准（M9 收口时 185 个） |
+| 规格 | 46 条，全部通过且带证据（`BASELINE`：46 通过 / 0 失败 / 0 未实现） |
+| 单测 | 以 `uv run pytest` 的输出为准（M11 收口时 203 个） |
 | 回归集 | 20 例，pass_rate 1.0，跑两遍一致 |
 | runtime | native（默认）+ langgraph（可选） |
 
@@ -322,7 +346,7 @@ uv run python scripts/smoke_real_model.py
 | M7 | 副作用判据：`replay` 声明、`unknown` 状态、键作用域、真 SIGKILL 验收 | S2.5–S2.9、S4.4 |
 | M8 | 模型循环：model → tool → model 接进 runtime，恢复不重问模型 | S11.1–S11.5 |
 | M9 | 事件日志：事件是真相，checkpoint 是投影缓存；删掉只写不读的两张表与 `async` 档 | S12.1–S12.3 |
-| M11 | 审批记录：跨进程存活、策略版本校验与过期吊销（进行中） | S5.4–S5.5 |
+| M11 | 审批记录：跨进程存活、策略版本校验与过期吊销 | S5.4–S5.5 |
 
 ## 明确不做
 
