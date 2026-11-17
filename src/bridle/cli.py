@@ -93,11 +93,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
         return 2
     state_dir = Path(args.state_dir)
     replay = Replay(args.effect_replay)
+    explicit_restart_limit = getattr(args, "_restart_limit_explicit", args.restart_limit != 5)
     if args.runtime == "langgraph" and (replay is Replay.UNSAFE or args.hold
-                                        or args.hold_after_commit is not None):
-        # langgraph backend 不跟进 M7/M9 的语义（blocked / unknown / 事件日志）。悄悄降级比报错危险。
+                                        or args.hold_after_commit is not None
+                                        or explicit_restart_limit):
+        # langgraph backend 不跟进 M7/M9/M10 的语义（blocked / unknown / 事件日志 / 重启上限）。悄悄降级比报错危险。
         print(json.dumps({"code": "UNSUPPORTED_ON_LANGGRAPH",
-                          "error": "--effect-replay unsafe、--hold 与 --hold-after-commit 只支持 native runtime"},
+                          "error": "--effect-replay unsafe、--hold、--hold-after-commit 与 --restart-limit 只支持 native runtime"},
                          ensure_ascii=False))
         return 2
     if args.hold_after_commit is not None and args.durability != Durability.SYNC.value:
@@ -691,6 +693,14 @@ def _cmd_concurrency(args: argparse.Namespace) -> int:
     return 0
 
 
+class _ExplicitRestartLimit(argparse.Action):
+    """区分用户显式传入 `--restart-limit` 与沿用默认值 5（供 --runtime langgraph 拒绝静默忽略）。"""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        setattr(namespace, "_restart_limit_explicit", True)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="harness", description="通用 Agent Harness")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -724,7 +734,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--hold-after-commit", type=int, default=None, metavar="N",
                      help="验收用：第 N 步的 step_committed 事件写入后、缓存写入前停住等着被 SIGKILL"
                           "（30 秒后自行退出）")
-    run.add_argument("--restart-limit", type=int, default=5,
+    run.add_argument("--restart-limit", type=int, default=5, action=_ExplicitRestartLimit,
                      help="无新提交时允许连续恢复的上限（默认 5），达到后熔断为 faulted")
     run.set_defaults(func=_cmd_run)
 

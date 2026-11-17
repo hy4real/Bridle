@@ -323,14 +323,14 @@ uv run harness verify S12.4   # 连续恢复 5 次无新提交 → 第 6 次 exi
 | 未解除的 `blocked` / `interrupted` 同样计数 | 未先 `effect resolve` 或 `harness approve` 就反复 `--resume`，同样累计重启计数直至熔断（`tests/test_restart_limit.py`） |
 
 边界：仓库里没有自动重启的 supervisor，`--resume` 是手动命令；`faulted` 后不会自动清除或重试；
-LangGraph backend 不跟进 `--restart-limit` 与 `faulted`。
+LangGraph backend 不跟进 `--restart-limit` 与 `faulted`（`--runtime langgraph` 显式传 `--restart-limit` 直接报错 `UNSUPPORTED_ON_LANGGRAPH`）。
 
 ## 收口状态
 
 | 项 | 数字 |
 | --- | --- |
 | 规格 | 49 条，全部通过且带证据（`BASELINE`：49 通过 / 0 失败 / 0 未实现） |
-| 单测 | 以 `uv run pytest` 的输出为准（M10 收口时 233 个） |
+| 单测 | 以 `uv run pytest` 的输出为准（M10 收口时 237 个） |
 | 回归集 | 20 例，pass_rate 1.0，跑两遍一致 |
 | runtime | native（默认）+ langgraph（可选） |
 
