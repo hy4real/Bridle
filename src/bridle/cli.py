@@ -7,8 +7,9 @@ M1: run（含 resume / durability / 崩溃注入 / 取消）
 M7: effect list / effect resolve（查看与解除结果未知的副作用）
 M8: agent（模型循环：model → tool → model，跑在 native runtime 上）
 M9: log verify（由事件日志重算 state，与 checkpoint 缓存比对）
+M11: approve（批准待审批的工具调用）
 
-退出码：0 完成；3 中断；4 副作用结果未知（run 停在 blocked）；6 run id 已存在；
+退出码：0 完成；3 中断；4 副作用结果未知或审批失效（run 停在 blocked）；6 run id 已存在；
 7 run 被另一个进程持有；8 幂等键冲突；12 策略拒绝；13 沙箱不可用；14 结构化输出中止；
 21 工具协议失败；130 取消。
 """
@@ -236,7 +237,11 @@ def _cmd_agent(args: argparse.Namespace) -> int:
     config = AgentConfig(
         gateway=gateway,
         registry=registry,
-        policy=PolicyEngine(rules=rules, approval=ApprovalPolicy(args.approval)),
+        policy=PolicyEngine(
+            rules=rules,
+            approval=ApprovalPolicy(args.approval),
+            sandbox_mode=SandboxMode(args.sandbox_mode),
+        ),
         max_steps=args.max_steps,
         tool_timeout_s=args.tool_timeout,
         max_tokens=args.max_tokens,
@@ -279,6 +284,15 @@ def _cmd_agent(args: argparse.Namespace) -> int:
         "messages": len(state.get("messages", [])),
         "ledger": [{"key": r["key"], "status": r["status"], "executions": r["executions"]}
                    for r in runtime.ledger.rows()],
+        "approvals": [
+            {
+                "approval_id": a["approval_id"],
+                "status": a["status"],
+                "tool_name": a["tool_name"],
+                "tool_call_id": a["tool_call_id"],
+            }
+            for a in runtime.ledger.approvals(run_id=args.run_id)
+        ],
         "sink_rows": len(sink.rows()),
         "append_rows": len(sink.append_rows()),
     }, ensure_ascii=False, indent=2))
@@ -564,6 +578,71 @@ def _cmd_effect_resolve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_approve(args: argparse.Namespace) -> int:
+    """批准一条待审批的工具调用（M11）。必须拿到对应 run 的锁。"""
+    from .effects import validate_run_id
+    from .runtime.lock import run_lock
+
+    state_dir = Path(args.state_dir)
+    ledger = _open_ledger(state_dir)
+    if ledger is None:
+        return 1
+
+    try:
+        if args.approval_id is not None:
+            row = ledger.get_approval_by_id(args.approval_id)
+            if row is None:
+                print(json.dumps({"code": "NO_SUCH_APPROVAL", "id": args.approval_id},
+                                 ensure_ascii=False))
+                return 1
+            run_id = row["run_id"]
+        else:
+            run_id = validate_run_id(args.run_id or "run-1")
+
+        with run_lock(state_dir, run_id):
+            if args.approval_id is not None:
+                approval_id = args.approval_id
+            else:
+                pending = ledger.approvals(run_id=run_id, status="pending")
+                if not pending:
+                    print(json.dumps({"code": "NO_PENDING_APPROVAL", "run_id": run_id},
+                                     ensure_ascii=False))
+                    return 1
+                if len(pending) > 1:
+                    print(json.dumps({
+                        "code": "MULTIPLE_PENDING_APPROVALS",
+                        "run_id": run_id,
+                        "ids": [item["approval_id"] for item in pending],
+                    }, ensure_ascii=False))
+                    return 1
+                approval_id = pending[0]["approval_id"]
+
+            updated = ledger.approve(approval_id, ttl_s=args.ttl, granted_by=args.by)
+    except RunLocked as error:
+        print(json.dumps({"code": "RUN_LOCKED", "run_id": error.run_id,
+                          "error": str(error)}, ensure_ascii=False))
+        return EXIT_RUN_LOCKED
+    except KeyError:
+        print(json.dumps({"code": "NO_SUCH_APPROVAL", "id": args.approval_id}, ensure_ascii=False))
+        return 1
+    except ValueError as error:
+        print(json.dumps({"code": "NOT_APPROVABLE", "error": str(error)}, ensure_ascii=False))
+        return 1
+
+    print(json.dumps({
+        "approval_id": updated["approval_id"],
+        "run_id": updated["run_id"],
+        "step_index": updated["step_index"],
+        "tool_call_id": updated["tool_call_id"],
+        "tool_name": updated["tool_name"],
+        "status": updated["status"],
+        "granted_by": updated["granted_by"],
+        "expires_at": updated["expires_at"],
+        "policy_version": updated["policy_version"],
+    }, ensure_ascii=False))
+    return 0
+
+
 def _cmd_eval(args: argparse.Namespace) -> int:
     first = run_suite()
     second = run_suite()
@@ -701,6 +780,8 @@ def build_parser() -> argparse.ArgumentParser:
     agent.add_argument("--deny-tool", action="append", default=[], help="如 tool:flaky_write*")
     agent.add_argument("--ask-tool", action="append", default=[], help="命中时需要审批")
     agent.add_argument("--approval", default="on-request", choices=[a.value for a in ApprovalPolicy])
+    agent.add_argument("--sandbox-mode", default="read-only",
+                       choices=[m.value for m in SandboxMode])
     agent.add_argument("--tool-timeout", type=float, default=5.0)
     agent.add_argument("--model-timeout", type=float, default=30.0)
     agent.add_argument("--max-tokens", type=int, default=None,
@@ -732,6 +813,15 @@ def build_parser() -> argparse.ArgumentParser:
     effect_resolve.add_argument("--outcome", required=True, choices=["applied", "not-applied"])
     effect_resolve.add_argument("--by", default=getpass.getuser(), help="解除人，写进账本")
     effect_resolve.set_defaults(func=_cmd_effect_resolve)
+
+    approve = sub.add_parser("approve", help="批准一条待审批的工具调用（M11）")
+    approve.add_argument("--state-dir", required=True)
+    approve_target = approve.add_mutually_exclusive_group()
+    approve_target.add_argument("--run-id", default=None, help="批准该 run 当前待审批的记录（默认 run-1）")
+    approve_target.add_argument("--id", dest="approval_id", default=None, help="直接按 approval_id 批准")
+    approve.add_argument("--ttl", type=float, default=3600.0, help="批准有效期（秒），默认 3600")
+    approve.add_argument("--by", default=getpass.getuser(), help="批准人，写进账本")
+    approve.set_defaults(func=_cmd_approve)
     return parser
 
 

@@ -15,7 +15,7 @@
 步骤没有正常跑完时，落盘的是**进入该步之前**（也就是最后一次提交）的 state：
 步骤可能已经改了一半 state，把半步修改存下来，恢复重跑时它们会被再应用一遍。
 
-副作用结果未知且不可重放时，run 停在 `blocked`。恢复会重新进入这一步，
+副作用结果未知且不可重放，或已有审批失效/吊销时，run 停在 `blocked`。恢复会重新进入这一步，
 账本里的 `unknown` 被 `resolve` 之前一直停在 `blocked`——不会自动重放。
 
 durability：`sync` 每个事件、每份缓存立刻落盘；`exit` 都攒在内存里，run 结束或停下时
@@ -32,7 +32,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from ..effects import EffectOutcomeUnknown, RunAlreadyExists, validate_run_id
+from ..effects import ApprovalRevoked, EffectOutcomeUnknown, RunAlreadyExists, validate_run_id
 from .checkpointer import Checkpointer
 from .events import EventLog, compute_delta, project
 from .ledger import EffectLedger
@@ -191,7 +191,7 @@ class AgentRuntime:
             except Cancelled:
                 return self._stop(report, committed, parent, RunStatus.CANCELLED,
                                   error=f"cancelled during {step.name}")
-            except EffectOutcomeUnknown as error:
+            except (EffectOutcomeUnknown, ApprovalRevoked) as error:
                 report.blocked_on = error.key
                 return self._stop(report, committed, parent, RunStatus.BLOCKED,
                                   error=f"blocked during {step.name}: {error}")

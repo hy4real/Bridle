@@ -22,6 +22,7 @@ from . import (
     checks_m7,
     checks_m8,
     checks_m9,
+    checks_m11,
 )
 from .registry import CheckResult, Spec, not_implemented
 
@@ -99,9 +100,9 @@ _spec("S5.2", "A5", "deny 优先于 allow，allow 无法为 deny 开例外",
 _spec("S5.3", "A5", "refusal / finish_reason=length / 内容过滤三条旁路都不写入下游",
       "harness verify S5.3", "M2", checks_m2.check_s53)
 _spec("S5.4", "A5", "审批记录跨进程存活：interrupted 后 approve 再恢复，不重问人直接执行",
-      "harness verify S5.4", "M11")
+      "harness verify S5.4", "M11", checks_m11.check_s54)
 _spec("S5.5", "A5", "恢复前校验审批有效性：策略变化或过期则吊销，run 停在 blocked",
-      "harness verify S5.5", "M11")
+      "harness verify S5.5", "M11", checks_m11.check_s55)
 
 # A6 成本
 _spec("S6.1", "A6", "归因账本分层：task → session → turn → call → attempt",

@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from dataclasses import dataclass
 from typing import Any
 
-from ..effects import Replay
+from ..effects import ApprovalRevoked, Replay
 from ..model.gateway import ModelGateway, ModelTimeout, QuotaExhausted
 from ..policy import Decision, PolicyEngine
+from ..runtime.ledger import hash_args
 from ..runtime.types import NodeInterrupt, RunFailed, Step, StepContext, Task
 from ..tools.base import Tool, ToolProtocolError
 from ..tools.registry import ToolRegistry
@@ -117,21 +119,61 @@ def _run_tool_call(ctx: StepContext, raw: dict[str, Any], config: AgentConfig) -
 
     模型的错（参数坏了、工具不存在、被策略拒绝）→ 带 is_error 的工具结果，run 继续。
     harness 的问题：工具协议失败（重试耗尽）→ RunFailed；结果未知 → EffectOutcomeUnknown 上抛，
-    run 停在 blocked；需要人审批 → NodeInterrupt，run 停在 interrupted。
+    run 停在 blocked；需要人审批 → 先落盘待批记录再 NodeInterrupt，run 停在 interrupted；
+    已有审批失效/过期/吊销 → ApprovalRevoked 上抛，run 停在 blocked。
     """
     call = parse_tool_call(raw)
     if call.error is not None:
         return tool_error(call.id, call.error, "模型给出的工具调用无法解析")
 
+    # 必须在 config.policy.decide() 之前检查审批记录：
+    # 防止改成 deny 后被 decide() 吞成 POLICY_DENIED 继续跑完，也防止删掉 ask 规则后绕过吊销。
+    args_sha = hash_args(call.arguments)
+    approval = ctx.ledger.get_approval(ctx.run_id, ctx.step_index, call.id)
+    approved_ok = False
+    if approval is not None:
+        if approval["status"] == "revoked":
+            raise ApprovalRevoked(
+                approval["approval_id"],
+                approval["revoked_reason"] or "审批已吊销",
+            )
+        if approval["status"] == "approved":
+            mismatch_reason: str | None = None
+            if approval["tool_name"] != call.name or approval["args_hash"] != args_sha:
+                mismatch_reason = "工具名或参数与批准记录不一致"
+            elif approval["expires_at"] is not None and time.time() > float(approval["expires_at"]):
+                mismatch_reason = "审批已过期"
+            elif approval["policy_version"] != config.policy.version():
+                mismatch_reason = "策略版本已变更，原审批失效"
+            if mismatch_reason is not None:
+                ctx.ledger.revoke(approval["approval_id"], reason=mismatch_reason)
+                raise ApprovalRevoked(approval["approval_id"], mismatch_reason)
+            approved_ok = True
+
     tool: Tool | None = next((t for t in config.registry.tools if t.name == call.name), None)
     if tool is None:
         return tool_error(call.id, "UNKNOWN_TOOL", f"没有这个工具：{call.name}")
 
-    verdict = config.policy.decide(f"tool:{call.name}")
-    if verdict.decision is Decision.FORBID:
-        return tool_error(call.id, "POLICY_DENIED", verdict.reason)
-    if verdict.decision is Decision.PROMPT:
-        raise NodeInterrupt({"tool": call.name, "tool_call_id": call.id, "reason": verdict.reason})
+    if not approved_ok:
+        verdict = config.policy.decide(f"tool:{call.name}")
+        if verdict.decision is Decision.FORBID:
+            return tool_error(call.id, "POLICY_DENIED", verdict.reason)
+        if verdict.decision is Decision.PROMPT:
+            approval_id = ctx.ledger.request_approval(
+                ctx.run_id,
+                ctx.step_index,
+                call.id,
+                call.name,
+                args_sha,
+                config.policy.version(),
+                reason=verdict.reason,
+            )
+            raise NodeInterrupt({
+                "approval_id": approval_id,
+                "tool": call.name,
+                "tool_call_id": call.id,
+                "reason": verdict.reason,
+            })
 
     try:
         tool.validate(call.arguments)

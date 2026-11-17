@@ -29,7 +29,7 @@ class RunStatus(str, Enum):
     INTERRUPTED = "interrupted"
     CANCELLED = "cancelled"
     CRASHED = "crashed"
-    BLOCKED = "blocked"  # 有副作用结果未知且不可重放，等人 resolve
+    BLOCKED = "blocked"  # 副作用结果未知（等人 resolve）或审批失效/吊销
     FAILED = "failed"    # 任务自己判定无法继续（模型不可用、步数用尽）；重试没有意义
 
 
@@ -150,4 +150,4 @@ class RunReport:
     steps_run: list[str] = field(default_factory=list)
     replayed_steps: list[str] = field(default_factory=list)
     error: str | None = None
-    blocked_on: str | None = None  # blocked 时：卡在哪个副作用键上
+    blocked_on: str | None = None  # blocked 时：卡在哪个副作用键或审批 ID 上
