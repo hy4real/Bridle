@@ -11,15 +11,15 @@ from ..effects import scoped_key
 
 
 class Durability(str, Enum):
-    """checkpoint 写入时机。
+    """事件与 checkpoint 缓存的写入时机。
 
     exit  只在运行结束时落盘。崩溃 = 这次运行全丢。性能最好，长任务最脆弱。
-    async 每步异步落盘。可能丢掉"正在写的那一步"（小窗口）。
-    sync  每步同步落盘。慢，但崩溃后一定恢复到最近完成的步。
+    sync  每步同步落盘。慢，但崩溃后一定恢复到最近提交的步。
+
+    M1–M8 还有一档 async，实现上和 sync 一样是同步写，名不副实，M9.5 删除。
     """
 
     EXIT = "exit"
-    ASYNC = "async"
     SYNC = "sync"
 
 

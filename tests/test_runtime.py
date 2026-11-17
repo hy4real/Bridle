@@ -17,9 +17,9 @@ from bridle.runtime.checkpointer import _SCHEMA
 from bridle.runtime.types import Checkpoint
 
 
-def test_checkpointer_creates_three_tables(tmp_path: Path) -> None:
+def test_checkpointer_is_a_single_cache_table(tmp_path: Path) -> None:
     cp = Checkpointer(tmp_path)
-    assert {"checkpoints", "checkpoint_blobs", "checkpoint_writes"} <= set(cp.tables())
+    assert cp.tables() == ["checkpoints"]
 
 
 def test_checkpoint_roundtrip_and_history(tmp_path: Path) -> None:

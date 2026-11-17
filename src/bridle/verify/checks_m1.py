@@ -163,6 +163,7 @@ def check_s23() -> CheckResult:
 
 # --- S2.4 ---------------------------------------------------------------
 def check_s24() -> CheckResult:
+    """M9 起的判定：事件日志 + 账本三件套是真相，checkpoint 库只剩一张投影缓存表。"""
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp) / "state"
         process = _run(["run", "--state-dir", str(state_dir)])
@@ -171,33 +172,47 @@ def check_s24() -> CheckResult:
 
         checkpointer = sqlite3.connect(state_dir / "checkpoints.sqlite")
         checkpointer.row_factory = sqlite3.Row
-        tables = [r[0] for r in checkpointer.execute(
+        cp_tables = [r[0] for r in checkpointer.execute(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
-        columns = {t: [r[1] for r in checkpointer.execute(f"PRAGMA table_info({t})")]
-                   for t in ("checkpoints", "checkpoint_blobs", "checkpoint_writes")}
+        cp_columns = [r[1] for r in checkpointer.execute("PRAGMA table_info(checkpoints)")]
         rows_cp = list(checkpointer.execute(
             "SELECT kind, state_json FROM checkpoints ORDER BY ts"))
         kinds = [r["kind"] for r in rows_cp]
         final_status = json.loads(rows_cp[-1]["state_json"]).get("status") if rows_cp else None
         checkpointer.close()
 
-        rows, _, _ = _state(state_dir)
-        if not {"checkpoints", "checkpoint_blobs", "checkpoint_writes"} <= set(tables):
-            return failed(f"三张表不全：{tables}")
-        for required in ("thread_id", "checkpoint_ns", "checkpoint_id"):
-            if required not in columns["checkpoints"]:
-                return failed(f"checkpoints 缺主键列 {required}：{columns['checkpoints']}")
+        ledger = sqlite3.connect(state_dir / "ledger.sqlite")
+        ledger_tables = [r[0] for r in ledger.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
+        effect_events = [(r[0], json.loads(r[1]).get("key")) for r in ledger.execute(
+            "SELECT type, payload_json FROM events WHERE type LIKE 'effect_%' ORDER BY seq")] \
+            if "events" in ledger_tables else []
+        ledger.close()
+
+        if cp_tables != ["checkpoints"]:
+            return failed(f"checkpoint 库应只剩投影缓存一张表：{cp_tables}")
+        for required in ("thread_id", "checkpoint_ns", "checkpoint_id", "last_seq"):
+            if required not in cp_columns:
+                return failed(f"checkpoints 缺列 {required}：{cp_columns}")
         if "final" not in kinds or final_status != "completed":
             return failed(f"没有标记完成的最终 checkpoint：kinds={kinds} status={final_status}")
+        if not {"effects", "effect_attempts", "events"} <= set(ledger_tables):
+            return failed(f"账本库缺表：{ledger_tables}")
+
+        rows, _, _ = _state(state_dir)
         if not rows:
             return failed("账本为空")
         row = rows[0]
         if not row["intent_json"] or not row["attempt_id"] or not row["result_json"]:
             return failed(f"三件套不完整：{row}")
+        key = row["key"]
+        if ("effect_intent", key) not in effect_events or ("effect_outcome", key) not in effect_events:
+            return failed(f"事件日志里没有键 {key} 的意图与结果：{effect_events}")
 
         return passed(
-            f"三张表齐全：{sorted(set(tables) & {'checkpoints', 'checkpoint_blobs', 'checkpoint_writes'})}",
-            f"checkpoints 主键列：{columns['checkpoints'][:3]}",
-            f"checkpoint 序列：{kinds}，末条 state.status={final_status}",
-            f"账本三件套：intent={row['intent_json'][:40]}… attempt={row['attempt_id']} result={'有' if row['result_json'] else '无'}",
+            f"checkpoint 库：{cp_tables}（投影缓存，列含 last_seq）；序列 {kinds}，末条 state.status={final_status}",
+            f"账本库：{ledger_tables}",
+            f"账本三件套：key={key} intent={row['intent_json'][:40]}… attempt={row['attempt_id']} "
+            f"result={'有' if row['result_json'] else '无'}",
+            f"事件日志里同一个键：{[t for t, k in effect_events if k == key]}",
         )

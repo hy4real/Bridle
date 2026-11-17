@@ -1,12 +1,12 @@
-"""三表 checkpointer（SQLite）。
+"""checkpoint 缓存（SQLite）。
 
-表结构与 LangGraph 的 PostgresSaver 同构（`libs/checkpoint-postgres/.../base.py:50,60,69`）：
-    checkpoints          主键 (thread_id, checkpoint_ns, checkpoint_id)
-    checkpoint_blobs     主键 (thread_id, checkpoint_ns, channel, version)
-    checkpoint_writes    主键 (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
+M9 起事件日志（`ledger.sqlite` 的 `events`）是真相，这里只存由日志算出来的投影：
+    checkpoints   主键 (thread_id, checkpoint_ns, checkpoint_id)，`last_seq` 记它对应日志的哪一条
 
-为什么拆三张而不是一张大表：状态里既有"小元数据"（元信息、时间）又有"大值"（消息、
-文件内容）。分开存，读取元数据时不必反序列化整份状态——这是它敢存全量的前提。
+主键形状沿用 LangGraph 的 checkpointer（`thread_id / checkpoint_ns / checkpoint_id`），
+`langgraph_export.py` 导出时才写成 LangGraph 自己的结构。M1–M8 曾仿 PostgresSaver 多建
+blobs 与 writes 两张表，它们只写不读，M9.5 删除。
+恢复时缓存与日志对不上，以日志为准并重写缓存（见 `loop.py`）。
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from typing import Any
 from ..effects import StateVersionMismatch
 from .types import Checkpoint, Durability
 
-SCHEMA_VERSION = 2  # 2：checkpoints 加 last_seq（M9：缓存要记得自己对应日志的哪一条）
+SCHEMA_VERSION = 3  # 2：checkpoints 加 last_seq；3：删掉只写不读的 blobs / writes 两张表
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS checkpoints (
@@ -38,28 +38,6 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
 );
 
-CREATE TABLE IF NOT EXISTS checkpoint_blobs (
-    thread_id     TEXT NOT NULL,
-    checkpoint_ns TEXT NOT NULL DEFAULT '',
-    channel       TEXT NOT NULL,
-    version       INTEGER NOT NULL,
-    type          TEXT NOT NULL,
-    value         BLOB,
-    PRIMARY KEY (thread_id, checkpoint_ns, channel, version)
-);
-
-CREATE TABLE IF NOT EXISTS checkpoint_writes (
-    thread_id     TEXT NOT NULL,
-    checkpoint_ns TEXT NOT NULL DEFAULT '',
-    checkpoint_id TEXT NOT NULL,
-    task_id       TEXT NOT NULL,
-    idx           INTEGER NOT NULL,
-    channel       TEXT NOT NULL,
-    value_json    TEXT NOT NULL,
-    task_path     TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
-);
-
 CREATE INDEX IF NOT EXISTS idx_checkpoints_thread
     ON checkpoints (thread_id, checkpoint_ns, ts);
 """
@@ -73,7 +51,7 @@ class Checkpointer:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.state_dir / "checkpoints.sqlite"
         self._lock = threading.Lock()
-        self._async_queue: list[Checkpoint] = []
+        self._exit_queue: list[Checkpoint] = []
         self._stopped = False
         with self._connect() as conn:
             has_table = conn.execute(
@@ -98,19 +76,15 @@ class Checkpointer:
     def save(self, checkpoint: Checkpoint, durability: Durability) -> bool:
         """返回是否**已经落盘**。exit 档返回 False，表示只进内存队列。"""
         if durability is Durability.EXIT:
-            self._async_queue.append(checkpoint)
+            self._exit_queue.append(checkpoint)
             return False
-        if durability is Durability.ASYNC:
-            # 异步档：交给后台线程；为了可测，这里同步写但语义上不保证成功
-            self._write(checkpoint)
-            return True
         self._write(checkpoint)
         return True
 
     def flush(self) -> None:
         """运行结束时把 exit 档攒下的所有 checkpoint 一次写掉。"""
         with self._lock:
-            pending, self._async_queue = self._async_queue, []
+            pending, self._exit_queue = self._exit_queue, []
         for checkpoint in pending:
             self._write(checkpoint)
 
@@ -131,38 +105,6 @@ class Checkpointer:
                     json.dumps(checkpoint.state, ensure_ascii=False),
                     json.dumps({"writer": "bridle"}, ensure_ascii=False),
                     checkpoint.last_seq,
-                ),
-            )
-            # blob 表：每个 state 键一个"channel"，version 用单调递增序号
-            for index, (channel, value) in enumerate(sorted(checkpoint.state.items())):
-                conn.execute(
-                    """INSERT OR REPLACE INTO checkpoint_blobs
-                       (thread_id, checkpoint_ns, channel, version, type, value)
-                       VALUES (?,?,?,?,?,?)""",
-                    (
-                        checkpoint.thread_id,
-                        checkpoint.checkpoint_ns,
-                        channel,
-                        index,
-                        type(value).__name__,
-                        json.dumps(value, ensure_ascii=False).encode(),
-                    ),
-                )
-            # writes 表：这次 checkpoint 里由哪个 task 写了哪个 channel
-            conn.execute(
-                """INSERT OR REPLACE INTO checkpoint_writes
-                   (thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel,
-                    value_json, task_path)
-                   VALUES (?,?,?,?,?,?,?,?)""",
-                (
-                    checkpoint.thread_id,
-                    checkpoint.checkpoint_ns,
-                    checkpoint.checkpoint_id,
-                    f"task-{checkpoint.kind}",
-                    0,
-                    "state",
-                    json.dumps(checkpoint.state, ensure_ascii=False),
-                    "",
                 ),
             )
 

@@ -1,10 +1,11 @@
 """runtime：状态、checkpoint、恢复、取消。
 
-三条来自调研的硬约束（`sources/github-roadmap-analysis.md` §2）：
-1. checkpoint 是**三张表**：checkpoints / checkpoint_blobs / checkpoint_writes，
-   主键含 namespace，子图与主图才能共存（LangGraph 的做法，我们照抄结构）。
-2. durability 是**三档配置**：exit / async / sync，代价各不相同（默认 async）。
-3. 恢复的语义是**重跑节点**，不是从断点续行——所以副作用必须幂等。
+几条硬约束：
+1. 事件日志（`events.py`）是真相；checkpoint 是由日志算出来的投影缓存，
+   主键含 namespace，形状沿用 LangGraph 的 checkpointer。
+2. durability 两档：exit（结束时写）/ sync（每步写，默认）。
+3. 恢复的语义是**重跑没提交的节点**，不是从断点续行：副作用要么可重放，
+   要么在账本里声明不可重放，结果未知时停下等人（`ledger.py`）。
 """
 
 from .types import (

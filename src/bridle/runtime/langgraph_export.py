@@ -1,7 +1,7 @@
 """checkpoint 的跨 runtime 互操作。
 
 一个必须澄清的事实（本机实测）：**LangGraph 的 SQLite saver 是两张表**
-（`checkpoints` + `writes`），只有 Postgres saver 才是三表（多一张 `checkpoint_blobs`）。
+（`checkpoints` + `writes`），只有 Postgres saver 才是三表（多一张 blobs 表）。
 所以「导出成三表」这个说法只在 Postgres 后端成立；这里导出到官方 SQLite saver，
 并直接用它自己的 `put()` / `get_tuple()` 做读回——**互操作经过的是对方代码，不是我们照抄的 DDL**。
 """
