@@ -260,3 +260,152 @@ def test_resume_repairs_stale_cache_preserving_summary_fields(tmp_path: Path) ->
     assert latest.state["summary"] == "摘要内容"
     assert latest.state["first_kept_seq"] == 2
     assert latest.state["kept_from_index"] == 2
+
+
+# --- M12.3：agent 循环与模型摘要边界 --------------------------------------
+def _agent_config(server, sink, **kwargs):
+    from bridle.agent.task import AgentConfig
+    from bridle.model.gateway import ModelGateway
+    from bridle.policy import ApprovalPolicy, CommandRules, Decision, PolicyEngine, Rule
+    from bridle.tools.builtin import note_read
+    from bridle.tools.registry import ToolRegistry
+
+    registry = ToolRegistry()
+    registry.register(note_read())
+    rules = CommandRules([Rule("allow", Decision.ALLOW, "tool:*")])
+    return AgentConfig(
+        gateway=ModelGateway(
+            server.base_url,
+            retries=0,
+            sleep=lambda _s: None,
+            first_byte_timeout=5.0,
+            total_timeout=5.0,
+        ),
+        registry=registry,
+        policy=PolicyEngine(rules=rules, approval=ApprovalPolicy.ON_REQUEST),
+        **kwargs,
+    )
+
+
+def test_compact_step_does_not_reask_summary_model_after_crash_before_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """摘要模型回答已落账本、step_committed + summary 还没落盘时崩溃：恢复不重问摘要模型。"""
+    from bridle.agent.task import build_agent_task
+    from bridle.fake_model.server import FakeModelServer, ScriptedModel
+    from bridle.runtime.demo import EffectSink
+
+    class _Died(BaseException):
+        pass
+
+    model = ScriptedModel([
+        {"tool_calls": [{"id": "c1", "name": "note_read", "arguments": {"path": "p1-" + "甲" * 60}}]},
+        {"tool_calls": [{"id": "c2", "name": "note_read", "arguments": {"path": "p2-" + "乙" * 60}}]},
+        {"content": "崩溃前摘要"},       # compact_step 调用（只能被调用 1 次）
+        {"content": "恢复后完成"},
+    ])
+    with FakeModelServer(model) as server:
+        config = _agent_config(
+            server, EffectSink(tmp_path), max_steps=12, context_budget_tokens=300, keep_recent_tokens=150
+        )
+        original_append_many = EventLog.append_many
+
+        def die_before_summary_commit(self, run_id, items):
+            if any(type_ == "summary" for type_, _, _ in items):
+                raise _Died()
+            return original_append_many(self, run_id, items)
+
+        monkeypatch.setattr(EventLog, "append_many", die_before_summary_commit)
+        with pytest.raises(_Died):
+            AgentRuntime(build_agent_task("测试崩溃恢复", config), tmp_path).run()
+        monkeypatch.setattr(EventLog, "append_many", original_append_many)
+        assert model.calls == 3  # 2 轮模型 + 1 次摘要；已落账本，事件还没提交
+
+        report = AgentRuntime(build_agent_task("测试崩溃恢复", config), tmp_path).run(resume=True)
+
+    assert report.status is RunStatus.COMPLETED
+    assert report.replayed_steps == ["compact"]
+    assert model.calls == 4  # 恢复时重跑 compact 但不重问摘要模型，只问最终回答 1 次
+    compact_rows = [r for r in EffectLedger(tmp_path).rows() if r["key"].endswith(":compact")]
+    assert len(compact_rows) == 1
+    assert compact_rows[0]["executions"] == 1
+    assert compact_rows[0]["attempts"] == 2  # 第 2 次走账本去重
+    assert cli.main(["log", "verify", "--state-dir", str(tmp_path), "--run-id", "run-1"]) == 0
+
+
+def test_single_huge_message_does_not_trigger_infinite_compaction_loop(tmp_path: Path) -> None:
+    """尾部单条消息就超过 budget 时，new_cut == kept_from_index 不得循环压缩。"""
+    from bridle.agent.task import build_agent_task
+    from bridle.fake_model.server import FakeModelServer, ScriptedModel
+    from bridle.runtime.demo import EffectSink
+
+    # 第 1 轮只有 [sys, user(超大)], budget=50 仍无法继续切（new_cut=1 == kept_from_index=1），直接走 model
+    huge_prompt = "超大提示词：" + "甲" * 200
+    model = ScriptedModel([
+        {"tool_calls": [{"id": "c1", "name": "note_read", "arguments": {"path": "大路径-" + "乙" * 200}}]},
+        {"content": "折叠了 user"},  # compact 只折叠一次（把 huge_prompt 折掉，留 [asst, tool]）
+        {"content": "最终完成"},      # 即使 [asst, tool] 仍 > budget，new_cut == prev_cut，不再循环压缩
+    ])
+    with FakeModelServer(model) as server:
+        config = _agent_config(
+            server, EffectSink(tmp_path), max_steps=8, context_budget_tokens=100, keep_recent_tokens=50
+        )
+        report = AgentRuntime(build_agent_task(huge_prompt, config), tmp_path).run()
+
+    assert report.status is RunStatus.COMPLETED
+    assert report.steps_run == ["model", "tool:note_read", "compact", "model"]
+    assert model.calls == 3
+
+
+@pytest.mark.parametrize(
+    "step, expected_needle",
+    [
+        ({"status": 500}, "摘要模型不可用"),
+        ({"content": "半截", "finish_reason": "length"}, "finish_reason=length"),
+        ({"content": "   "}, "摘要模型返回空摘要"),
+    ],
+)
+def test_compact_step_failures_fail_the_run(tmp_path: Path, step: dict, expected_needle: str) -> None:
+    from bridle.agent.task import build_agent_task
+    from bridle.fake_model.server import FakeModelServer, ScriptedModel
+    from bridle.runtime.demo import EffectSink
+
+    model = ScriptedModel([
+        {"tool_calls": [{"id": "c1", "name": "note_read", "arguments": {"path": "p1-" + "甲" * 60}}]},
+        {"tool_calls": [{"id": "c2", "name": "note_read", "arguments": {"path": "p2-" + "乙" * 60}}]},
+        step,
+    ])
+    with FakeModelServer(model) as server:
+        config = _agent_config(
+            server, EffectSink(tmp_path), max_steps=10, context_budget_tokens=300, keep_recent_tokens=150
+        )
+        report = AgentRuntime(build_agent_task("测试摘要失败", config), tmp_path).run()
+
+    assert report.status is RunStatus.FAILED
+    assert report.error is not None and expected_needle in report.error
+
+
+def test_agent_config_and_cli_reject_invalid_budget_settings(tmp_path: Path, capsys) -> None:
+    from bridle.agent.task import build_agent_task
+    from bridle.fake_model.server import FakeModelServer, ScriptedModel
+    from bridle.runtime.demo import EffectSink
+
+    with FakeModelServer(ScriptedModel([])) as server:
+        with pytest.raises(ValueError):
+            build_agent_task(
+                "x",
+                _agent_config(server, EffectSink(tmp_path), context_budget_tokens=0),
+            )
+        with pytest.raises(ValueError):
+            build_agent_task(
+                "x",
+                _agent_config(server, EffectSink(tmp_path), keep_recent_tokens=-1),
+            )
+
+    code = cli.main([
+        "agent", "--state-dir", str(tmp_path / "bad"), "--base-url", "http://127.0.0.1:9/v1",
+        "--prompt", "x", "--context-budget", "0",
+    ])
+    assert code == 2
+    assert json.loads(capsys.readouterr().out)["code"] == "BAD_CONFIG"
+

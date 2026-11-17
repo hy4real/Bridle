@@ -23,11 +23,19 @@ from typing import Any
 from ..effects import ApprovalRevoked, Replay
 from ..model.gateway import ModelGateway, ModelTimeout, QuotaExhausted
 from ..policy import Decision, PolicyEngine
+from ..runtime.events import EventLog
 from ..runtime.ledger import hash_args
 from ..runtime.types import NodeInterrupt, RunFailed, Step, StepContext, Task
 from ..tools.base import Tool, ToolProtocolError
 from ..tools.registry import ToolRegistry
 from ..tools.runner import ToolRunner
+from .compaction import (
+    build_model_messages,
+    compute_cut_point,
+    estimate_messages_tokens,
+    format_compaction_messages,
+    message_seqs_from_events,
+)
 from .messages import assistant_message, parse_tool_call, tool_error, tool_result
 
 SYSTEM_PROMPT = "你是一个会调用工具完成任务的助手。需要时调用工具；完成后用一句话说明结果。"
@@ -44,6 +52,8 @@ class AgentConfig:
     tool_retries: int = 2
     max_tokens: int | None = None
     system_prompt: str = SYSTEM_PROMPT
+    context_budget_tokens: int | None = None
+    keep_recent_tokens: int = 200
 
 
 class _ModelUnavailable(Exception):
@@ -58,6 +68,10 @@ def _initial_messages(config: AgentConfig, prompt: str) -> list[dict[str, Any]]:
 def build_agent_task(prompt: str, config: AgentConfig) -> Task:
     if config.max_steps < 1:
         raise ValueError("max_steps 至少为 1")
+    if config.context_budget_tokens is not None and config.context_budget_tokens < 1:
+        raise ValueError("context_budget_tokens 至少为 1")
+    if config.keep_recent_tokens < 0:
+        raise ValueError("keep_recent_tokens 不能为负")
 
     def next_step(state: dict[str, Any]) -> Step | None:
         # 只读 state：恢复时同一份 state 必须给出同一个下一步
@@ -69,18 +83,102 @@ def build_agent_task(prompt: str, config: AgentConfig) -> Task:
         if pending:
             name = (pending[0].get("function") or {}).get("name") or "?"
             return Step(f"tool:{name}", tool_step)
+        if config.context_budget_tokens is not None:
+            raw_messages = state.get("messages") or _initial_messages(config, prompt)
+            kept_from_index = int(state.get("kept_from_index", 1))
+            prompt_messages = build_model_messages(
+                raw_messages,
+                summary=state.get("summary"),
+                kept_from_index=kept_from_index,
+            )
+            if estimate_messages_tokens(prompt_messages) > config.context_budget_tokens:
+                new_cut = compute_cut_point(
+                    raw_messages, keep_recent_tokens=config.keep_recent_tokens
+                )
+                if new_cut > kept_from_index:
+                    return Step("compact", compact_step)
         return Step("model", model_step)
 
+    def compact_step(ctx: StepContext) -> None:
+        raw_messages = ctx.state.get("messages") or _initial_messages(config, prompt)
+        prev_cut = int(ctx.state.get("kept_from_index", 1))
+        prev_summary = ctx.state.get("summary")
+        new_cut = compute_cut_point(raw_messages, keep_recent_tokens=config.keep_recent_tokens)
+        if new_cut <= prev_cut or new_cut >= len(raw_messages):
+            raise RunFailed(
+                f"切点计算异常：prev_cut={prev_cut}, new_cut={new_cut}, len={len(raw_messages)}"
+            )
+
+        events = EventLog(ctx.ledger.db_path).read(ctx.run_id)
+        event_messages, seqs = message_seqs_from_events(events)
+        if len(seqs) != len(raw_messages) or event_messages != raw_messages:
+            raise RunFailed("事件日志中的 messages 与当前 state 不一致，无法确定 first_kept_seq")
+        first_kept_seq = seqs[new_cut]
+
+        compact_messages = format_compaction_messages(
+            raw_messages[prev_cut:new_cut], prev_summary=prev_summary
+        )
+        request = {
+            "messages": compact_messages,
+            "max_tokens": config.max_tokens,
+            "prev_cut": prev_cut,
+            "new_cut": new_cut,
+        }
+        request_sha = hashlib.sha256(
+            json.dumps(request, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+        def summarize() -> dict[str, Any]:
+            try:
+                completion = config.gateway.complete(
+                    compact_messages, max_tokens=config.max_tokens
+                )
+            except (ModelTimeout, QuotaExhausted, RuntimeError, OSError) as error:
+                raise _ModelUnavailable(f"{type(error).__name__}: {error}") from error
+            return {
+                "text": completion.text,
+                "finish_reason": completion.finish_reason,
+                "model": completion.model,
+                "usage": completion.usage.as_dict(),
+            }
+
+        try:
+            answer = ctx.ledger.attempt(
+                ctx.effect_key("compact"),
+                {"op": "compact", "request_sha": request_sha},
+                summarize,
+                replay=Replay.SAFE,
+            ).value
+        except _ModelUnavailable as error:
+            raise RunFailed(f"摘要模型不可用：{error}") from error
+
+        if answer["finish_reason"] != "stop":
+            raise RunFailed(f"摘要输出非正常终止：finish_reason={answer['finish_reason']}")
+        summary_text = (answer.get("text") or "").strip()
+        if not summary_text:
+            raise RunFailed("摘要模型返回空摘要")
+
+        ctx.emit_summary(
+            summary_text,
+            first_kept_seq=first_kept_seq,
+            kept_from_index=new_cut,
+        )
+
     def model_step(ctx: StepContext) -> None:
-        messages = ctx.state.get("messages") or _initial_messages(config, prompt)
+        raw_messages = ctx.state.get("messages") or _initial_messages(config, prompt)
+        prompt_messages = build_model_messages(
+            raw_messages,
+            summary=ctx.state.get("summary"),
+            kept_from_index=int(ctx.state.get("kept_from_index", 1)),
+        )
         schemas = config.registry.schemas()
-        request = {"messages": messages, "tools": schemas, "max_tokens": config.max_tokens}
+        request = {"messages": prompt_messages, "tools": schemas, "max_tokens": config.max_tokens}
         request_sha = hashlib.sha256(
             json.dumps(request, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
         def ask() -> dict[str, Any]:
             try:
-                completion = config.gateway.complete(messages, tools=schemas or None,
+                completion = config.gateway.complete(prompt_messages, tools=schemas or None,
                                                      max_tokens=config.max_tokens)
             except (ModelTimeout, QuotaExhausted, RuntimeError, OSError) as error:
                 raise _ModelUnavailable(f"{type(error).__name__}: {error}") from error
@@ -99,7 +197,7 @@ def build_agent_task(prompt: str, config: AgentConfig) -> Task:
             # 截断、内容过滤：这样的回答既不是完整答案，也不是可执行的工具调用
             raise RunFailed(f"模型输出非正常终止：finish_reason={answer['finish_reason']}")
 
-        ctx.state["messages"] = [*messages, assistant_message(answer["text"], answer["tool_calls"])]
+        ctx.state["messages"] = [*raw_messages, assistant_message(answer["text"], answer["tool_calls"])]
         ctx.state["pending_tool_calls"] = list(answer["tool_calls"])
         ctx.state["model_steps"] = int(ctx.state.get("model_steps", 0)) + 1
         if not answer["tool_calls"]:

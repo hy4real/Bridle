@@ -245,12 +245,19 @@ def _cmd_agent(args: argparse.Namespace) -> int:
         max_steps=args.max_steps,
         tool_timeout_s=args.tool_timeout,
         max_tokens=args.max_tokens,
+        context_budget_tokens=args.context_budget,
+        keep_recent_tokens=args.keep_recent_tokens,
     )
+    try:
+        task = build_agent_task(args.prompt, config)
+    except ValueError as error:
+        print(json.dumps({"code": "BAD_CONFIG", "error": str(error)}, ensure_ascii=False))
+        return 2
 
     cancel = CancelToken()
     previous = signal.signal(signal.SIGINT, lambda signum, frame: cancel.cancel())
     try:
-        runtime = AgentRuntime(build_agent_task(args.prompt, config), state_dir,
+        runtime = AgentRuntime(task, state_dir,
                                run_id=args.run_id, cancel=cancel)
         report = runtime.run(resume=args.resume)
     except RunAlreadyExists as error:
@@ -282,6 +289,9 @@ def _cmd_agent(args: argparse.Namespace) -> int:
         "steps_done": state.get("steps_done", []),
         "model_steps": state.get("model_steps", 0),
         "messages": len(state.get("messages", [])),
+        "summary": state.get("summary"),
+        "kept_from_index": state.get("kept_from_index"),
+        "first_kept_seq": state.get("first_kept_seq"),
         "ledger": [{"key": r["key"], "status": r["status"], "executions": r["executions"]}
                    for r in runtime.ledger.rows()],
         "approvals": [
@@ -786,6 +796,10 @@ def build_parser() -> argparse.ArgumentParser:
     agent.add_argument("--model-timeout", type=float, default=30.0)
     agent.add_argument("--max-tokens", type=int, default=None,
                        help="每次模型调用的输出上限。推理模型的 reasoning 也算在里面，给小了回答会被截断")
+    agent.add_argument("--context-budget", type=int, default=None,
+                       help="对话上下文预算（token）；超限时在下次模型调用前触发切点摘要")
+    agent.add_argument("--keep-recent-tokens", type=int, default=200,
+                       help="切点摘要保留的最近对话 token 预算（默认 200）")
     agent.add_argument("--api-key-env", default=None, metavar="NAME",
                        help="从这个环境变量读 API key（只打印变量名与长度）。本地假模型不需要")
     agent.add_argument("--hold-after-write", default=None, metavar="TOOL",

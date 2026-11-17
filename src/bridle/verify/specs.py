@@ -23,6 +23,7 @@ from . import (
     checks_m8,
     checks_m9,
     checks_m11,
+    checks_m12,
 )
 from .registry import CheckResult, Spec, not_implemented
 
@@ -82,9 +83,9 @@ _spec("S3.2", "A3", "前缀字节稳定（连续两轮前缀 hash 相同），sy
 _spec("S3.3", "A3", "token 报告区分 input / output / cache_read / cache_write，且子集关系成立",
       "harness verify S3.3", "M4", checks_m4.check_s33)
 _spec("S3.4", "A3", "切点摘要保留原文：循环超预算压缩后送模 token 受控，事件日志与 state 原文不删且可重算切点",
-      "harness verify S3.4", "M12")
+      "harness verify S3.4", "M12", checks_m12.check_s34)
 _spec("S3.5", "A3", "二次压缩以旧摘要为输入：第二次摘要请求包含第一次摘要文本，原文仍保留",
-      "harness verify S3.5", "M12")
+      "harness verify S3.5", "M12", checks_m12.check_s35)
 
 # A4 工具层
 _spec("S4.1", "A4", "工具定义有 token 预算：60 个工具时注入的是 top-k 而不是全量",
