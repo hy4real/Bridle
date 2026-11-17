@@ -21,6 +21,7 @@ from . import (
     checks_m6,
     checks_m7,
     checks_m8,
+    checks_m9,
 )
 from .registry import CheckResult, Spec, not_implemented
 
@@ -150,9 +151,9 @@ _spec("S11.5", "A11", "步数上限：模型一直要工具时，到上限判失
 
 # A12 事件日志（M9）：append-only 的事件是真相，checkpoint 是可以重算的投影缓存
 _spec("S12.1", "A12", "投影可自检：由事件重算的状态与 checkpoint 缓存一致",
-      "harness verify S12.1", "M9")
+      "harness verify S12.1", "M9", checks_m9.check_s121)
 _spec("S12.2", "A12", "缓存被改坏时以日志为准：自检报不一致，恢复后修复并留下记录",
-      "harness verify S12.2", "M9")
+      "harness verify S12.2", "M9", checks_m9.check_s122)
 _spec("S12.3", "A12", "崩在「事件已提交、缓存未写」之间：恢复不重跑已提交的步",
       "harness verify S12.3", "M9")
 

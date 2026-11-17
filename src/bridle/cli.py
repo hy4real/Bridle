@@ -6,6 +6,7 @@ M0: verify
 M1: run（含 resume / durability / 崩溃注入 / 取消）
 M7: effect list / effect resolve（查看与解除结果未知的副作用）
 M8: agent（模型循环：model → tool → model，跑在 native runtime 上）
+M9: log verify（由事件日志重算 state，与 checkpoint 缓存比对）
 
 退出码：0 完成；3 中断；4 副作用结果未知（run 停在 blocked）；6 run id 已存在；
 7 run 被另一个进程持有；8 幂等键冲突；12 策略拒绝；13 沙箱不可用；14 结构化输出中止；
@@ -477,6 +478,37 @@ def _open_ledger(state_dir: Path):
         return None
 
 
+def _cmd_log_verify(args: argparse.Namespace) -> int:
+    """事件日志是真相，checkpoint 是缓存：重算一遍，看缓存有没有偏。只读，不修。"""
+    from .runtime.checkpointer import Checkpointer
+    from .runtime.events import EventLog, project
+    from .runtime.loop import mismatched_keys
+
+    state_dir = Path(args.state_dir)
+    ledger = _open_ledger(state_dir)
+    if ledger is None:
+        return 1
+    events = EventLog(ledger.db_path).read(args.run_id)
+    projection, last_seq = project(events)
+    if projection is None:
+        print(json.dumps({"code": "NO_EVENTS", "run_id": args.run_id}, ensure_ascii=False))
+        return 1
+    cache = (Checkpointer(state_dir).latest(args.run_id)
+             if (state_dir / "checkpoints.sqlite").exists() else None)
+    equal = cache is not None and cache.state == projection
+    print(json.dumps({
+        "run_id": args.run_id,
+        "events": len(events),
+        "last_seq": last_seq,
+        "cache_last_seq": cache.last_seq if cache is not None else None,
+        "status": projection.get("status"),
+        "step_index": projection.get("step_index"),
+        "projection_equals_cache": equal,
+        "mismatched_keys": [] if equal else mismatched_keys(cache.state if cache else None, projection),
+    }, ensure_ascii=False, indent=2))
+    return 0 if equal else 1
+
+
 def _cmd_effect_list(args: argparse.Namespace) -> int:
     ledger = _open_ledger(Path(args.state_dir))
     if ledger is None:
@@ -667,6 +699,13 @@ def build_parser() -> argparse.ArgumentParser:
     agent.add_argument("--hold-after-write", default=None, metavar="TOOL",
                        help="验收用：这个工具写完下游后停住，等着被 SIGKILL（30 秒后自行退出）")
     agent.set_defaults(func=_cmd_agent)
+
+    log = sub.add_parser("log", help="事件日志（M9）")
+    log_sub = log.add_subparsers(dest="log_command", required=True)
+    log_verify = log_sub.add_parser("verify", help="由事件重算 state，与 checkpoint 缓存比对；一致退出码 0")
+    log_verify.add_argument("--state-dir", required=True)
+    log_verify.add_argument("--run-id", default="run-1")
+    log_verify.set_defaults(func=_cmd_log_verify)
 
     effect = sub.add_parser("effect", help="查看与解除副作用账本里的记录")
     effect_sub = effect.add_subparsers(dest="effect_command", required=True)

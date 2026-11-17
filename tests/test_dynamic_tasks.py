@@ -84,13 +84,15 @@ def test_run_failed_inside_a_step_saves_the_entry_snapshot(tmp_path: Path) -> No
 
 
 def test_static_task_still_reports_the_replayed_step(tmp_path: Path) -> None:
-    from bridle.runtime import Checkpoint, Durability
+    from bridle.runtime import EffectLedger
+    from bridle.runtime.events import EventLog
 
     task = Task("t", steps=[Step("a", lambda ctx: None), Step("b", lambda ctx: None)])
-    Checkpointer(tmp_path).save(
-        Checkpoint(thread_id="run-1", checkpoint_id="c1", ts=1.0,
-                   state={"run_id": "run-1", "step_index": 1, "steps_done": ["a"], "status": "running"}),
-        Durability.SYNC)
+    log = EventLog(EffectLedger(tmp_path).db_path)
+    log.append("run-1", "run_started", payload={"state": {
+        "run_id": "run-1", "step_index": 0, "steps_done": [], "status": "running"}})
+    log.append("run-1", "step_committed", step_index=0, payload={
+        "step": "a", "delta": {"set": {"step_index": 1}, "extend": {"steps_done": ["a"]}}})
 
     report = AgentRuntime(task, tmp_path).run(resume=True)
 

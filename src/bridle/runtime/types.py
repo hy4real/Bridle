@@ -86,6 +86,7 @@ class Checkpoint:
     checkpoint_ns: str = ""
     ts: float = 0.0
     kind: str = "step"
+    last_seq: int = 0  # 这份缓存对应事件日志的哪一条（exit 档下为 0）
 
 
 @dataclass

@@ -11,7 +11,7 @@ from bridle import cli
 from bridle.effects import Replay, RunLocked, run_id_of
 from bridle.runtime import AgentRuntime, Checkpointer, Durability, EffectLedger, RunStatus
 from bridle.runtime.lock import run_lock
-from bridle.runtime.types import Cancelled, Checkpoint, NodeInterrupt, Step, StepContext, Task
+from bridle.runtime.types import Cancelled, NodeInterrupt, Step, StepContext, Task
 
 
 class _ProcessDied(BaseException):
@@ -126,13 +126,15 @@ def test_interrupt_and_cancel_also_save_the_step_entry_snapshot(
 
 
 def test_resume_after_last_step_checkpoint_but_before_final_does_not_index_error(tmp_path: Path) -> None:
+    from bridle.runtime.events import EventLog
+
     task = Task("t", [Step("only", lambda ctx: None)])
-    # 最后一步的 checkpoint 已写、final 还没写就被杀：step_index 等于步数
-    Checkpointer(tmp_path).save(
-        Checkpoint(thread_id="run-1", checkpoint_id="c1", ts=1.0,
-                   state={"run_id": "run-1", "step_index": 1, "steps_done": ["only"],
-                          "status": "running"}),
-        Durability.SYNC)
+    # 最后一步已提交、run_finished 还没写就被杀：step_index 等于步数
+    log = EventLog(EffectLedger(tmp_path).db_path)
+    log.append("run-1", "run_started", payload={"state": {
+        "run_id": "run-1", "step_index": 0, "steps_done": [], "status": "running"}})
+    log.append("run-1", "step_committed", step_index=0, payload={
+        "step": "only", "delta": {"set": {"step_index": 1}, "extend": {"steps_done": ["only"]}}})
 
     report = AgentRuntime(task, tmp_path).run(resume=True)
 

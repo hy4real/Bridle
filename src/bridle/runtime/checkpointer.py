@@ -19,7 +19,10 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from ..effects import StateVersionMismatch
 from .types import Checkpoint, Durability
+
+SCHEMA_VERSION = 2  # 2：checkpoints 加 last_seq（M9：缓存要记得自己对应日志的哪一条）
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS checkpoints (
@@ -31,6 +34,7 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     kind                 TEXT NOT NULL DEFAULT 'step',
     state_json           TEXT NOT NULL,
     metadata_json        TEXT NOT NULL DEFAULT '{}',
+    last_seq             INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
 );
 
@@ -72,7 +76,16 @@ class Checkpointer:
         self._async_queue: list[Checkpoint] = []
         self._stopped = False
         with self._connect() as conn:
+            has_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='checkpoints'").fetchone()
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if has_table and version != SCHEMA_VERSION:
+                conn.close()
+                raise StateVersionMismatch(
+                    f"{self.db_path} 的结构版本是 {version}，需要 {SCHEMA_VERSION}。"
+                    "不做迁移：请换一个新的 state 目录。")
             conn.executescript(_SCHEMA)
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             conn.execute("PRAGMA journal_mode=WAL")
 
     # --- 连接 ---
@@ -106,8 +119,8 @@ class Checkpointer:
             conn.execute(
                 """INSERT OR REPLACE INTO checkpoints
                    (thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id,
-                    ts, kind, state_json, metadata_json)
-                   VALUES (?,?,?,?,?,?,?,?)""",
+                    ts, kind, state_json, metadata_json, last_seq)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
                 (
                     checkpoint.thread_id,
                     checkpoint.checkpoint_ns,
@@ -117,6 +130,7 @@ class Checkpointer:
                     checkpoint.kind,
                     json.dumps(checkpoint.state, ensure_ascii=False),
                     json.dumps({"writer": "bridle"}, ensure_ascii=False),
+                    checkpoint.last_seq,
                 ),
             )
             # blob 表：每个 state 键一个"channel"，version 用单调递增序号
@@ -171,6 +185,7 @@ class Checkpointer:
             checkpoint_ns=row["checkpoint_ns"],
             ts=row["ts"],
             kind=row["kind"],
+            last_seq=row["last_seq"],
         )
 
     def history(self, thread_id: str) -> list[Checkpoint]:
@@ -190,6 +205,7 @@ class Checkpointer:
                 checkpoint_ns=row["checkpoint_ns"],
                 ts=row["ts"],
                 kind=row["kind"],
+                last_seq=row["last_seq"],
             )
             for row in rows
         ]

@@ -110,10 +110,11 @@ def test_model_failures_end_the_run_as_failed(tmp_path: Path, step: dict, needle
     assert Checkpointer(tmp_path).latest("run-1").kind == "failed"
 
 
-def test_model_answer_is_not_asked_again_if_killed_before_the_checkpoint(
+def test_model_answer_is_not_asked_again_if_killed_before_the_step_commits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """回答已经落进账本、checkpoint 还没写时进程死了：恢复拿回同一个回答，不重问模型。"""
+    """回答已经落进账本、这一步还没提交（step_committed 没写）时进程死了：
+    恢复会重跑这一步，但回答来自账本，不重问模型。"""
 
     class _Died(BaseException):
         pass
@@ -121,24 +122,24 @@ def test_model_answer_is_not_asked_again_if_killed_before_the_checkpoint(
     model = ScriptedModel([_call("note_read", {"path": "x"}), {"content": "第二轮"}, {"content": "不该被用到"}])
     with FakeModelServer(model) as server:
         config = _config(server, EffectSink(tmp_path))
-        original_save = AgentRuntime._save
+        original_emit = AgentRuntime._emit
 
-        def die_on_first_step_save(self, state, parent, *, kind="step"):
-            if kind == "step" and state["step_index"] == 1:
+        def die_before_first_commit(self, type_, *, step_index=None, payload=None):
+            if type_ == "step_committed" and step_index == 0:
                 raise _Died()
-            return original_save(self, state, parent, kind=kind)
+            return original_emit(self, type_, step_index=step_index, payload=payload)
 
-        monkeypatch.setattr(AgentRuntime, "_save", die_on_first_step_save)
+        monkeypatch.setattr(AgentRuntime, "_emit", die_before_first_commit)
         with pytest.raises(_Died):
             AgentRuntime(build_agent_task("做事", config), tmp_path).run()
-        monkeypatch.setattr(AgentRuntime, "_save", original_save)
+        monkeypatch.setattr(AgentRuntime, "_emit", original_emit)
         assert model.calls == 1
-        assert Checkpointer(tmp_path).latest("run-1") is None  # 第一步的 checkpoint 没写成
 
-        report = AgentRuntime(build_agent_task("做事", config), tmp_path).run(resume=False)
+        report = AgentRuntime(build_agent_task("做事", config), tmp_path).run(resume=True)
 
     assert report.status is RunStatus.COMPLETED
-    assert model.calls == 2  # 第一轮的回答来自账本；只为第二轮问了一次
+    assert report.replayed_steps == ["model"]  # 第 0 步没提交，所以重跑
+    assert model.calls == 2  # 但第一轮的回答来自账本；只为第二轮问了一次
     model_rows = [r for r in EffectLedger(tmp_path).rows() if r["key"].endswith(":model")]
     assert [r["executions"] for r in model_rows] == [1, 1]
 
