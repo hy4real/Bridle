@@ -15,7 +15,7 @@ uv run harness verify S2.1        # 只跑一条
 ./scripts/ci.sh                   # 单测 + 规格数 + 基线断言
 ```
 
-**当前状态：M11 已交付，46 条规格全部通过；M12（切点摘要）进行中，2 条新规格逐条实现，当前通过数见 `BASELINE`。**
+**当前状态：M12 已交付，48 条规格全部通过。**
 通过数记在 `BASELINE` 里，CI 会比对——**想加通过数必须同时改 BASELINE**，
 没人能悄悄让测试变绿。
 
@@ -280,12 +280,36 @@ uv run harness verify S5.5   # 批准后改 --deny-tool 或 --ttl 0.01 过期 �
 边界：单用户本机原型，按单条待批调用授权，不做 Agent Identity / Credential 管理或跨会话通配授权；
 `revoked` 记录不可再用 `harness approve` 复活；LangGraph backend 不跟进这套审批记录。
 
+## M12 做了什么：切点摘要
+
+`context/manager.py` 的 `compact()` 会用 `self.messages = tail` 原地截断历史，接进事件日志后会破坏
+`messages` 的 append-only 增量。M12 把切点摘要接进 `harness agent` 模型循环：原文在 `state["messages"]`
+与事件日志里永不删除，压缩只在发给模型的请求里切出最近保留窗口并前置注入摘要。
+
+```bash
+uv run harness agent --state-dir /tmp/cmp --base-url http://127.0.0.1:8000/v1 \
+     --prompt "..." --context-budget 350 --keep-recent-tokens 160 --max-steps 12
+uv run harness verify S3.4   # 超预算触发 compact，送模 <= budget，原文不减，事件可重算 first_kept_seq
+uv run harness verify S3.5   # 二次压缩请求正文包含第一次摘要，增量折叠 [prev_summary] + messages[prev_cut:new_cut]
+```
+
+| 决定 | 证据 |
+| --- | --- |
+| 原文 append-only，不原地截断 | `state["messages"]` 只追加，事件增量走 `extend`；`model_step` 按 `[messages[0]] + ([summary_msg] if summary) + messages[kept_from_index:]` 发送（保持 S3.2 前缀结构） |
+| 切点对齐 `assistant(tool_calls)` 边界 | `compute_cut_point` 从尾向前累计至 `keep_recent_tokens`，遇 `role == "tool"` 继续向前对齐到对应 `assistant`，不切走 `messages[0]`；单条超大消息且 `new_cut <= kept_from_index` 时不触发无限压缩 |
+| `step_committed` 与 `"summary"` 同事务写入 | `loop.py` 用 `append_many` 原子写入两条事件并同步维护 `checkpoints` 缓存；`events.py` 的 `project()` 维护 `summary` / `first_kept_seq` / `kept_from_index`，压缩后 `log verify` 返回 0 |
+| 摘要调用走账本（`replay=safe`） | `compact_step` 折叠 `[prev_summary] + messages[prev_cut:new_cut]` 并经 `ctx.ledger.attempt` 落盘，崩溃恢复不重问摘要模型 |
+| 切点可从日志重算 | 从 `seq < summary_event.seq` 且跳过 `"summary"` 的事件重算 `compute_cut_point`，得到的 `first_kept_seq` 与现场一致 |
+
+边界：OpenAI 兼容接口没有「关闭 prompt-cache 写入」的请求开关，只记录取舍而不实现；本轮不做摘要质量评测；
+LangGraph backend 不跟进切点摘要与 `"summary"` 事件。
+
 ## 收口状态
 
 | 项 | 数字 |
 | --- | --- |
-| 规格 | 48 条：M1–M11 的 46 条通过且带证据，M12 的 2 条逐条实现中（见 `BASELINE`） |
-| 单测 | 以 `uv run pytest` 的输出为准（M11 收口时 208 个） |
+| 规格 | 48 条，全部通过且带证据（`BASELINE`：48 通过 / 0 失败 / 0 未实现） |
+| 单测 | 以 `uv run pytest` 的输出为准（M12 收口时 225 个） |
 | 回归集 | 20 例，pass_rate 1.0，跑两遍一致 |
 | runtime | native（默认）+ langgraph（可选） |
 
@@ -347,7 +371,7 @@ uv run python scripts/smoke_real_model.py
 | M8 | 模型循环：model → tool → model 接进 runtime，恢复不重问模型 | S11.1–S11.5 |
 | M9 | 事件日志：事件是真相，checkpoint 是投影缓存；删掉只写不读的两张表与 `async` 档 | S12.1–S12.3 |
 | M11 | 审批记录：跨进程存活、策略版本校验与过期吊销 | S5.4–S5.5 |
-| M12 | 切点摘要：append-only 原文 + `"summary"` 事件 + 从事件重算切点（进行中） | S3.4–S3.5 |
+| M12 | 切点摘要：append-only 原文 + `"summary"` 事件 + 从事件重算切点 | S3.4–S3.5 |
 
 ## 明确不做
 
