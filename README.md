@@ -15,7 +15,7 @@ uv run harness verify S2.1        # 只跑一条
 ./scripts/ci.sh                   # 单测 + 规格数 + 基线断言
 ```
 
-**当前状态：M8 已交付，其 41 条规格全部通过；M9（事件日志）进行中，3 条新规格逐条实现，当前通过数见 `BASELINE`。**
+**当前状态：M9 已交付，44 条规格全部通过。**
 通过数记在 `BASELINE` 里，CI 会比对——**想加通过数必须同时改 BASELINE**，
 没人能悄悄让测试变绿。
 
@@ -40,7 +40,7 @@ uv run harness run --state-dir /tmp/demo3 --tool-delay 2   # 另开一个终端 
 
 | 决定 | 理由 |
 | --- | --- |
-| checkpoint 拆三表（`checkpoints`/`blobs`/`writes`），主键含 `checkpoint_ns` | 与 LangGraph 同构；小元数据与大值分开，读元数据不必反序列化整份状态 |
+| checkpoint 主键含 `checkpoint_ns`，形状与 LangGraph 同构 | 子图与主图才能共存。M1 还仿 PostgresSaver 多建了 blobs、writes 两张表，它们只写不读，M9 删掉（见下文 M9） |
 | 恢复 = 从 `step_index` 重跑整步，不是续行 | 只存 channel 值就能恢复，不必序列化栈帧；代价是步骤必须幂等 |
 | 账本先落**意图**再执行，下游按键 upsert | 端到端做不到 exactly-once；at-least-once + 幂等才是可实现的保证 |
 
@@ -225,12 +225,43 @@ uv run harness verify S11.5   # 模型一直要工具：--max-steps 到上限判
 工具只有三个演示工具；对话记录不压缩（M12 的范围）；需要审批的工具调用会让 run 停在
 `interrupted`，但审批本身还没有落盘（M11 的范围）；LangGraph backend 不支持动态任务。
 
+## M9 做了什么：事件日志
+
+M8 之前 checkpoint 就是状态本身，写坏了没有别的东西可以对照。M9 在 `ledger.sqlite` 里加了一张
+append-only 的 `events` 表，run 级事件（`run_started`、`step_committed`、`run_stopped`、
+`run_resumed`、`run_finished`、`projection_repaired`）和副作用事件（`effect_intent`、
+`effect_outcome`、`effect_resolved`）共用一个按 run 单调、无空洞的 `seq`。checkpoint 降为
+由事件算出来的投影缓存，记着自己对应到哪一条 `seq`。
+
+```bash
+uv run harness run --state-dir /tmp/ev
+uv run harness log verify --state-dir /tmp/ev --run-id run-1   # 由事件重算状态，与缓存比对；不一致退出码 1
+uv run harness verify S12.1   # 正常跑完：事件 seq 连续，log verify 退出码 0
+uv run harness verify S12.2   # 把缓存的 step_index 改成 0：log verify 退出码 1，恢复以日志为准，不重跑
+uv run harness verify S12.3   # step_committed 写入后、缓存写入前被真 SIGKILL：恢复只跑剩下的一步
+```
+
+| 决定 | 证据 |
+| --- | --- |
+| `step_committed` 是一步的提交点，缓存写没写成都不影响 | 提交后、缓存前被杀，恢复只执行 `report`，账本 executions=1、没有去重记录（S12.3） |
+| 副作用事件与账本行同一个事务写 | 注入异常后两者都不存在（`tests/test_events.py`） |
+| 状态按增量记：`set` / `extend` / `del` | `messages` 这类只增长的列表每步只记新尾巴，日志不随步数平方增长 |
+| 缓存与日志对不上，以日志为准并留一条 `projection_repaired` | S12.2；S12.3 的恢复里也会出现，因为缓存落后于日志一步 |
+| 收回只写不读的结构 | checkpoint 库只剩 `checkpoints` 一张表（S2.4 按新标准验）；`--durability` 只剩 `exit` / `sync`，`async` 一直是同步写，删掉 |
+
+崩溃注入点 `--crash-after-step` 仍在提交事件之前，所以 S2.1 / S2.2 复现的「副作用已做、这一步没提交」
+窗口没有变。
+
+边界：恢复每次从第一条事件重放，没有事件快照；`log verify` 按顶层键比对；`exit` 档把事件攒到
+run 结束才写，崩溃等于这次 run 全丢，和以前一样；LangGraph backend 不写事件；持久性仍只到
+「进程被杀」，不承诺断电。
+
 ## 收口状态
 
 | 项 | 数字 |
 | --- | --- |
-| 规格 | 44 条：M1–M8 的 41 条通过且带证据，M9 的 3 条逐条实现中（见 `BASELINE`） |
-| 单测 | 以 `uv run pytest` 的输出为准（M8 收口时 169 个） |
+| 规格 | 44 条，全部通过且带证据（`BASELINE`：44 通过 / 0 失败 / 0 未实现） |
+| 单测 | 以 `uv run pytest` 的输出为准（M9 收口时 185 个） |
 | 回归集 | 20 例，pass_rate 1.0，跑两遍一致 |
 | runtime | native（默认）+ langgraph（可选） |
 
@@ -282,7 +313,7 @@ uv run python scripts/smoke_real_model.py
 | M | 内容 | 规格 |
 | --- | --- | --- |
 | M0 | 骨架、验收框架、假模型、CI | —（基础设施） |
-| M1 | runtime：checkpoint 三表、durability 三档、interrupt/resume | S2.1–S2.4 |
+| M1 | runtime：checkpoint（主键含 namespace）、durability、interrupt/resume | S2.1–S2.4 |
 | M2 | 策略三层（沙箱 × 审批 × 命令规则）、`SandboxBackend` | S1.1、S1.2、S5.1–S5.3 |
 | M3 | 工具层：token 预算、幂等、错误分层 | S4.1–S4.3 |
 | M4 | 上下文双层、前缀稳定、模型网关 | S3.1–S3.3、S6.2、S9.2、S9.3 |
@@ -290,7 +321,7 @@ uv run python scripts/smoke_real_model.py
 | M6 | 回归集、langgraph backend、框架对照 | S7.1、S7.2、S9.1、S10.1–S10.3 |
 | M7 | 副作用判据：`replay` 声明、`unknown` 状态、键作用域、真 SIGKILL 验收 | S2.5–S2.9、S4.4 |
 | M8 | 模型循环：model → tool → model 接进 runtime，恢复不重问模型 | S11.1–S11.5 |
-| M9 | 事件日志：事件是真相，checkpoint 是投影缓存；收回三表与三档（进行中） | S12.1–S12.3 |
+| M9 | 事件日志：事件是真相，checkpoint 是投影缓存；删掉只写不读的两张表与 `async` 档 | S12.1–S12.3 |
 
 ## 明确不做
 

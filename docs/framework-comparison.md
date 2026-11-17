@@ -9,8 +9,8 @@
 | 能力 | 官方机制 | 我们的对应实现 |
 | --- | --- | --- |
 | 状态机执行 | `StateGraph` + conditional edges | `runtime/loop.py` 的步骤循环 |
-| 持久化 | `Checkpointer` 接口；SQLite saver 两表（`checkpoints` / `writes`），Postgres saver 三表（多 `checkpoint_blobs`） | `checkpoint_blobs` 我们也拆了（三表），字段与主键对齐 |
-| 恢复 | 从最新 checkpoint 继续；`interrupt` 恢复是**整个节点重跑** | 相同语义：`step_index` 之后重跑整步 |
+| 持久化 | `Checkpointer` 接口；SQLite saver 两表（`checkpoints` / `writes`），Postgres saver 三表（多 `checkpoint_blobs`） | 主键形状对齐；M9 起只留 `checkpoints` 一张投影缓存表，真相是事件日志（M1–M8 曾仿 Postgres 拆三表，只写不读，已删） |
+| 恢复 | 从最新 checkpoint 继续；`interrupt` 恢复是**整个节点重跑** | 相同语义：由事件日志重算出 `step_index`，没提交的步整步重跑 |
 | 流式与中断 | `stream()` / `interrupt()` / `Command(resume=...)` | 未实现流式；中断用 `NodeInterrupt` + `resume` |
 | 并发与子图 | `Send` / 子图 / `checkpoint_ns` | 未实现子图；`checkpoint_ns` 字段已按对方主键预留 |
 
@@ -43,7 +43,7 @@
 
 | 项 | LangGraph | 我们 |
 | --- | --- | --- |
-| checkpoint 表 | SQLite 两表 / Postgres 三表 | 三表（SQLite） |
+| checkpoint 表 | SQLite 两表 / Postgres 三表 | 一张投影缓存表 + `events` 事件日志（SQLite） |
 | 恢复语义 | 整节点重跑 | 整步重跑（同） |
 | 双 runtime 一致性 | — | `harness verify S10.1` 断言 status / steps / 下游写入次数三项相同 |
 | 框架依赖 | 必需 | **可选**：`--runtime langgraph`，native 是默认路径 |

@@ -2,7 +2,7 @@
 
 这些测试保护的是**框架本身**，不是业务逻辑：
 - 规格数必须与文档一致（44），否则文档与代码会漂移；
-- 已交付里程碑（M1–M8）的 41 条必须全部通过，新登记的规格先是「未实现」，
+- 已交付里程碑（M1–M9）的 44 条必须全部通过，新登记的规格先是「未实现」，
   各状态条数与 BASELINE 逐字一致，否则有人会偷偷把断言写成恒真；
 - PASSED 必须带证据，否则「通过」就等于没跑。
 """
@@ -17,7 +17,7 @@ from bridle.verify import runner, specs
 from bridle.verify.registry import CheckResult, Status, failed, not_implemented, passed
 
 
-_DELIVERED_MILESTONES = {"M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8"}
+_DELIVERED_MILESTONES = {"M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9"}
 _BASELINE = Path(__file__).resolve().parents[1] / "BASELINE"
 
 
@@ -54,7 +54,7 @@ def test_delivered_specs_pass_and_baseline_matches() -> None:
     outcomes = runner.run_all()
     assert len(outcomes) == 44
     delivered = [o for o in outcomes if o.spec.milestone in _DELIVERED_MILESTONES]
-    assert len(delivered) == 41
+    assert len(delivered) == 44
     for outcome in delivered:
         assert outcome.result.status is Status.PASSED, (
             outcome.spec.id, outcome.result.status, outcome.result.reason)
